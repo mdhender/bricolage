@@ -30,7 +30,7 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "bricolage",
 	Short: "Bricolage is a content management system",
-	Long:  `A content management system derived from Bricolage CMS, a better CMS.`,
+	Long:  `A CMS derived from a better CMS, Bricolage CMS.`,
 	Run:   func(cmd *cobra.Command, args []string) {},
 }
 
@@ -43,6 +43,10 @@ func Execute() {
 	rootCmd.Flags().StringVar(&config.Site, "site", config.Site, "Path to write generated site files")
 
 	rootCmd.AddCommand(aboutCmd)
+
+	serverCmd.Flags().IntVarP(&config.Server.Port, "port", "p", config.Server.Port, "Port to listen on")
+	rootCmd.AddCommand(serverCmd)
+
 	rootCmd.AddCommand(versionCmd)
 
 	if err := rootCmd.Execute(); err != nil {

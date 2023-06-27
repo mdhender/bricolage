@@ -19,24 +19,18 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package bricolage
+package cli
 
-type Config struct {
-	Content string // path to read content
-	Site    string // path to write site
-	Server  ConfigServer
-}
+import (
+	"fmt"
+	"github.com/spf13/cobra"
+)
 
-type ConfigServer struct {
-	Port int
-}
-
-func DefaultConfig() *Config {
-	return &Config{
-		Content: "content",
-		Site:    "site",
-		Server: ConfigServer{
-			Port: 8080,
-		},
-	}
+var serverCmd = &cobra.Command{
+	Use:   "server",
+	Short: "Start web server on port 8080",
+	Long:  `Run a web server.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return fmt.Errorf("!implemented")
+	},
 }
