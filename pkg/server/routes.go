@@ -19,38 +19,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package cli
+package server
 
 import (
-	"github.com/mdhender/bricolage"
-	"github.com/spf13/cobra"
-	"log"
+	"github.com/mdhender/bricolage/pkg/way"
+	"net/http"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "bricolage",
-	Short: "Bricolage is a content management system",
-	Long:  `A CMS derived from a better CMS, Bricolage CMS.`,
-	Run:   func(cmd *cobra.Command, args []string) {},
-}
+func (s *Server) Routes() {
+	s.once.Do(func() {
+		s.router = way.NewRouter()
 
-var config *bricolage.Config
-
-func Execute() {
-	config = bricolage.DefaultConfig()
-
-	rootCmd.Flags().StringVar(&config.Content, "content", config.Content, "Path to read content from")
-	rootCmd.Flags().StringVar(&config.Site, "site", config.Site, "Path to write generated site files")
-
-	rootCmd.AddCommand(aboutCmd)
-
-	serveCmd.Flags().StringVarP(&config.Server.Host, "host", "H", config.Server.Host, "Host to listen on")
-	serveCmd.Flags().IntVarP(&config.Server.Port, "port", "P", config.Server.Port, "Port to listen on")
-	rootCmd.AddCommand(serveCmd)
-
-	rootCmd.AddCommand(versionCmd)
-
-	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
-	}
+		s.router.NotFound = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		})
+	})
 }

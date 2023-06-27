@@ -19,38 +19,46 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package cli
+package server
 
 import (
-	"github.com/mdhender/bricolage"
-	"github.com/spf13/cobra"
-	"log"
+	"fmt"
+	"net"
+	"path/filepath"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "bricolage",
-	Short: "Bricolage is a content management system",
-	Long:  `A CMS derived from a better CMS, Bricolage CMS.`,
-	Run:   func(cmd *cobra.Command, args []string) {},
+type Options []Option
+type Option func(*Server) error
+
+func WithHost(host string) Option {
+	return func(s *Server) error {
+		s.host = host
+		s.hostPort = net.JoinHostPort(s.host, fmt.Sprintf("%d", s.port))
+		return nil
+	}
 }
 
-var config *bricolage.Config
+func WithPort(port int) Option {
+	return func(s *Server) error {
+		s.port = port
+		s.hostPort = net.JoinHostPort(s.host, fmt.Sprintf("%d", s.port))
+		return nil
+	}
+}
 
-func Execute() {
-	config = bricolage.DefaultConfig()
+func WithRoot(path string) Option {
+	return func(s *Server) error {
+		s.root = path
+		return nil
+	}
+}
 
-	rootCmd.Flags().StringVar(&config.Content, "content", config.Content, "Path to read content from")
-	rootCmd.Flags().StringVar(&config.Site, "site", config.Site, "Path to write generated site files")
-
-	rootCmd.AddCommand(aboutCmd)
-
-	serveCmd.Flags().StringVarP(&config.Server.Host, "host", "H", config.Server.Host, "Host to listen on")
-	serveCmd.Flags().IntVarP(&config.Server.Port, "port", "P", config.Server.Port, "Port to listen on")
-	rootCmd.AddCommand(serveCmd)
-
-	rootCmd.AddCommand(versionCmd)
-
-	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
+func WithTemplates(path string) Option {
+	return func(s *Server) error {
+		if s.root == "" {
+			return fmt.Errorf("must set root before templates")
+		}
+		s.templates = filepath.Join(s.root, path)
+		return nil
 	}
 }

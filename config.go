@@ -28,6 +28,7 @@ type Config struct {
 }
 
 type ConfigServer struct {
+	Host string
 	Port int
 }
 

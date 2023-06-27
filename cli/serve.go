@@ -22,35 +22,26 @@
 package cli
 
 import (
-	"github.com/mdhender/bricolage"
+	"github.com/mdhender/bricolage/pkg/server"
 	"github.com/spf13/cobra"
-	"log"
 )
 
-var rootCmd = &cobra.Command{
-	Use:   "bricolage",
-	Short: "Bricolage is a content management system",
-	Long:  `A CMS derived from a better CMS, Bricolage CMS.`,
-	Run:   func(cmd *cobra.Command, args []string) {},
-}
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Start web server",
+	Long:  `Run a web server.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := server.New(
+			server.WithPort(config.Server.Port),
+			server.WithHost(config.Server.Host),
+			server.WithRoot(config.Site),
+			server.WithTemplates("templates"),
+		)
+		if err != nil {
+			return err
+		}
 
-var config *bricolage.Config
-
-func Execute() {
-	config = bricolage.DefaultConfig()
-
-	rootCmd.Flags().StringVar(&config.Content, "content", config.Content, "Path to read content from")
-	rootCmd.Flags().StringVar(&config.Site, "site", config.Site, "Path to write generated site files")
-
-	rootCmd.AddCommand(aboutCmd)
-
-	serveCmd.Flags().StringVarP(&config.Server.Host, "host", "H", config.Server.Host, "Host to listen on")
-	serveCmd.Flags().IntVarP(&config.Server.Port, "port", "P", config.Server.Port, "Port to listen on")
-	rootCmd.AddCommand(serveCmd)
-
-	rootCmd.AddCommand(versionCmd)
-
-	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
-	}
+		s.Routes()
+		return s.ListenAndServe()
+	},
 }

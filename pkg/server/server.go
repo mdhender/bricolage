@@ -19,18 +19,36 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-package cli
+package server
 
 import (
-	"fmt"
-	"github.com/spf13/cobra"
+	"github.com/mdhender/bricolage/pkg/way"
+	"log"
+	"net/http"
+	"sync"
 )
 
-var serverCmd = &cobra.Command{
-	Use:   "server",
-	Short: "Start web server on port 8080",
-	Long:  `Run a web server.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf("!implemented")
-	},
+type Server struct {
+	once      sync.Once
+	host      string
+	port      int
+	hostPort  string
+	router    *way.Router
+	root      string
+	templates string
+}
+
+func New(options ...Option) (*Server, error) {
+	s := &Server{}
+	for _, option := range options {
+		if err := option(s); err != nil {
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+func (s *Server) ListenAndServe() error {
+	log.Printf("server: listening on %s\n", s.hostPort)
+	return http.ListenAndServe(s.hostPort, s.router)
 }
