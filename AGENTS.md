@@ -53,6 +53,8 @@ internal/migrate        embedded migrations
 internal/service        use cases; owns transactions
 internal/{workflow,authz,publish,jobs,events,render}   subsystem logic
 internal/{api,web}      transports
+internal/web/devroutes  the /__development/* handlers; no build tag gates them
+internal/server         composition root: the route table, the one shutdown path
 internal/{clock,ids,config,buildenv}
 schema/                 .sql migrations, embedded
 deploy/                 reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
@@ -108,9 +110,19 @@ There is nothing for you to configure. You start `cmsd` and nothing else:
 
 ```sh
 brew services list | grep caddy    # expect "started" — do not start it yourself
-go run ./cmd/cmsd serve --db ./dev.db --addr 127.0.0.1:18443 --env development --timeout 60m
+mkdir -p var                       # you create the directory; no command ever will
+go run ./cmd/cmsdb init --db ./var                 # creates ./var/cms.db
+go run ./cmd/cmsdb bootstrap admin --db ./var --email admin@example.com --name Admin
+go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 --env development --timeout 60m
 go run ./cmd/earl login --server https://htmx-app.localhost:8443 --dev --email admin@example.com
 ```
+
+**`--db` names a directory, not a file** (`DESIGN.md` §13.1). The database
+inside it is always `cms.db`. Nothing in this system creates a directory, so
+`mkdir` is your job and a missing directory is a hard failure rather than a
+silently created empty CMS. `cmsd` never creates a database and never migrates
+one: if it will not start, run `cmsdb migrate up` or fix the path — do not reach
+for a flag that makes the server do it.
 
 **`go run ./cmd/...` is how we run commands locally.** There is no build step
 and no tag to remember: the one build tag we have, `production`, is for release
@@ -164,6 +176,7 @@ go test ./...
 go test -race ./...
 go vet ./...
 gofmt -l .
+grep -rn 'os\.MkdirAll\|os\.Mkdir(' ./cmd ./internal    # must print nothing
 ```
 
 - Run commands with `go run ./cmd/<name>`. Do not make a `go build` step a
@@ -221,8 +234,14 @@ These are not style preferences. Violating one is a bug even if the tests pass.
    reconstruct what happened.
 8. **Publish jobs pin a version id, never a document id.** The approved version
    is what ships, whatever the draft has become.
-9. **Migrations are append-only.** Once committed and released, a migration file
-   is never edited. Fix mistakes with a new migration.
+9. **Migrations are append-only — after beta.** Once committed and released, a
+   migration file is never edited; fix mistakes with a new migration. **This
+   rule is suspended while the project is in beta**, by deliberate exception
+   (`DESIGN.md` §13.6): migrations may be squashed and every database rebuilt,
+   because there is no sacred data in beta and no upgrade path is owed to
+   anyone. The exception ends at the first release somebody else's data depends
+   on. It does not license editing a migration to avoid writing a new one during
+   ordinary work — squashing is a deliberate act, announced in its own commit.
 10. **The API speaks `uid` only.** Internal integer primary keys never appear in
     a URL, a JSON body, or user-facing output.
 11. **Detect constraint violations by result code**, never by matching error
@@ -256,6 +275,29 @@ These are not style preferences. Violating one is a bug even if the tests pass.
     exported as exactly `production`; without the tag it panics if `CMS_ENV`
     *is* `production`. It reads the raw environment variable, not the resolved
     `environment`, and it must never grow a second responsibility.
+19. **Nothing creates a directory.** `os.Mkdir` and `os.MkdirAll` appear nowhere
+    in the database path — not in `cmsdb`, not in `cmsd`, not in a test helper,
+    not in a convenience wrapper. `--db` names a directory that must already
+    exist, and the database inside it is always the constant `cms.db`. A missing
+    directory is a hard failure naming the directory. A tool that creates what it
+    cannot find turns a typo into a plausible-looking, empty system.
+20. **Only `cmsdb init` creates a database, and only `cmsdb` migrates one.**
+    `cmsd` does neither, ever, under any flag. Open flags are always written out
+    explicitly, because the zero value of `sqlitex.PoolOptions.Flags` and the
+    no-flag form of `sqlite.OpenConn` both include `OpenCreate`. Only the create
+    path names `OpenCreate`.
+21. **`cmsd` verifies the database it opened and refuses to start otherwise.**
+    `PRAGMA application_id` must be `0x434D5330` (the ASCII bytes of `CMS0`) and
+    `PRAGMA user_version` must equal the number of embedded migrations, exactly —
+    ahead and behind are both hard failures. Both pragmas are maintained by
+    `sqlitemigration`; never write a `schema_migrations` table or any other
+    hand-rolled version bookkeeping. `sqlitemigration`'s own application-ID check
+    adopts an ID of `0` when the database has no schema, so `cmsd` performs this
+    check itself rather than inheriting that leniency (`DESIGN.md` §13.4).
+22. **`foreign_keys = ON` on every connection of every store**, in-memory
+    included; **WAL on every persistent store**. Both are per-connection
+    settings, so one connection that skips them is silently wrong for its whole
+    life.
 
 ## Code conventions
 
@@ -279,12 +321,15 @@ These are not style preferences. Violating one is a bug even if the tests pass.
 
 - `domain` is pure; test it exhaustively and table-driven.
 - `store` is tested against a real in-memory SQLite database with all migrations
-  applied through the same code path `cmsdb` uses. Not a mock.
+  applied through the same code path `cmsdb` uses. Not a mock. Foreign keys are
+  on there too (invariant 22); a test that passes with them off proves nothing.
 - `service` tests assert on emitted events as well as returned values. An
   operation that does not write its event is not finished.
 - Golden files for rendering and for `earl --json`; regenerate with `-update`.
 - Every milestone gets one end-to-end test driving `earl` against a `cmsd` on a
-  temporary database.
+  temporary database: `t.TempDir()`, then `cmsdb init` against it. **No test
+  helper calls `os.MkdirAll`** — a helper that creates what the commands refuse
+  to create is a hole in invariant 19 wide enough for the production code.
 - Concurrency tests run under `-race`.
 
 ## Pull requests

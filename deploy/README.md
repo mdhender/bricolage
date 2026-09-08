@@ -30,8 +30,14 @@ CA lives in `/opt/homebrew/var/lib/caddy/pki/`. Start only `cmsd`:
 
 ```sh
 brew services list | grep caddy    # expect "started"; if not, ask a human
-go run ./cmd/cmsd serve --db ./dev.db --addr 127.0.0.1:18443 --env development --timeout 60m
+mkdir -p var                       # no command creates a directory; this one is yours
+go run ./cmd/cmsdb init --db ./var                 # creates ./var/cms.db
+go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 --env development --timeout 60m
 ```
+
+`--db` names an existing directory; the database inside it is always `cms.db`.
+`cmsd` neither creates nor migrates it, so a fresh checkout needs the `cmsdb
+init` line above once.
 
 Open <https://htmx-app.localhost:8443/>.
 

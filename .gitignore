@@ -4,6 +4,9 @@
 # build output
 deploy/linux/
 
+# local database directory; --db names a directory, the file inside is cms.db
+var/
+
 # local env overrides; these hold secrets (see internal/dotenv)
 .env.local
 .env.*.local

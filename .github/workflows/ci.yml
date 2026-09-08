@@ -1,0 +1,115 @@
+# Copyright (c) 2026 Michael D Henderson.
+#
+# The gate, on every push and pull request. It is the same gate as "make
+# check"; the steps are spelled out rather than delegated so that a failure
+# names the rule it broke.
+
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Go 1.25 is a hard floor: net/http.CrossOriginProtection arrived in
+          # it and is the CSRF defence for the HTMX UI. Do not lower it.
+          go-version: '1.25'
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files need gofmt:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build
+        run: go build ./...
+
+      # Invariant 19. --db names a directory that must already exist; a tool
+      # that creates what it cannot find turns a typo into a plausible-looking,
+      # empty system.
+      - name: nothing creates a directory
+        run: |
+          if grep -rn 'os\.MkdirAll\|os\.Mkdir(' ./cmd ./internal; then
+            echo "nothing may create a directory (invariant 19, DESIGN.md 13.1)"; exit 1
+          fi
+
+      # Invariant 16. Either development route is a complete authentication
+      # bypass if it reaches production, and the resolved environment is the
+      # only thing standing in the way.
+      - name: only devroutes registers a development route
+        run: |
+          if grep -rn 'Handle\(Func\)\?(.*__development' ./cmd ./internal --include='*.go' \
+             | grep -v '^\./internal/web/devroutes/'; then
+            echo "only internal/web/devroutes may register a /__development/ pattern"; exit 1
+          fi
+          callers=$(grep -rl 'devroutes\.Register' ./cmd ./internal --include='*.go' | grep -v '_test\.go$')
+          if [ "$callers" != "./internal/server/routes.go" ]; then
+            echo "devroutes.Register must have exactly one call site; found: $callers"; exit 1
+          fi
+
+      # PLAN.md M0 acceptance 4. pkg/way is deleted and nothing replaces it;
+      # the route table is net/http.ServeMux patterns. The documents may still
+      # say so, which is why this looks at Go source and at the tree.
+      - name: pkg/way is gone
+        run: |
+          if [ -e pkg ]; then echo "pkg/ still exists"; ls -R pkg; exit 1; fi
+          if grep -rn 'pkg/way' . --include='*.go' --include='go.mod' --include='go.sum'; then
+            echo "pkg/way is deleted; the route table is net/http.ServeMux patterns"; exit 1
+          fi
+
+      # Invariant 3. What makes leases, schedules, and due dates testable.
+      - name: time.Now lives in main and internal/clock only
+        run: |
+          if grep -rn 'time\.Now()' ./cmd ./internal --include='*.go' \
+             | grep -v '^\./internal/clock/' | grep -v '_test\.go:'; then
+            echo "time.Now() belongs in main and internal/clock (invariant 3)"; exit 1
+          fi
+
+      - name: test
+        run: go test ./...
+
+      - name: test -race
+        run: go test -race ./...
+
+      # The tagged half of the build/environment interlock (PLAN.md M0
+      # acceptance 14). The other half runs in the ordinary test step.
+      - name: test -tags production
+        run: go test -tags production ./internal/buildenv/
+
+      # PLAN.md M0 acceptance 11: every command runs with no tag. There is one
+      # build tag in this repository and it must never become a prerequisite
+      # for running anything.
+      - name: go run works without a tag
+        run: |
+          go run ./cmd/cmsd version
+          go run ./cmd/cmsdb version
+          go run ./cmd/earl version
+
+      # PLAN.md M0 acceptance 9: the route table tells the truth about what is
+      # registered, and with the default environment it names nothing under
+      # /__development/.
+      - name: the default route table has no development routes
+        run: |
+          table=$(go run ./cmd/cmsd routes)
+          echo "$table"
+          if echo "$table" | grep -q '__development'; then
+            echo "the default environment listed a /__development/ route"; exit 1
+          fi
+          if ! go run ./cmd/cmsd routes --env development | grep -q '__development'; then
+            echo "--env development listed no /__development/ route; the assertion above proves nothing"; exit 1
+          fi

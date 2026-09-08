@@ -97,7 +97,10 @@ present and doing nothing but printing their version.
   `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags production -trimpath`
   into `deploy/linux/amd64/`. Only `release` passes a tag; `go run ./cmd/...`
   must work for every command without one.
-- Add CI running the full gate on push, including the no-dev-routes assertion.
+- Add CI running the full gate on push, including the no-dev-routes assertion
+  and the no-directory-creation assertion
+  (`grep -rn 'os\.MkdirAll\|os\.Mkdir(' ./cmd ./internal` prints nothing).
+  Both are cheap greps that catch the two rules nobody notices breaking.
 
 **Acceptance.**
 1. `make check` passes from a clean clone on Go 1.25.
@@ -141,37 +144,93 @@ present and doing nothing but printing their version.
 16. `make release` produces `linux/amd64` binaries; `file deploy/linux/amd64/cmsd`
    confirms the platform and `CGO_ENABLED=0` needed no toolchain.
 
-**Out of scope.** Any behaviour beyond `/healthz` and shutdown.
+**Out of scope.** Any behaviour beyond `/healthz` and shutdown. **`cmsd` opens
+no database in M0 and has no `--db` flag yet** — it gains one in M1, under the
+rules in `DESIGN.md` §13.4. Do not add a database, a directory, or a file
+anywhere in this milestone; when the flag arrives it names an existing directory
+and the server neither creates nor migrates what it finds there.
 
 ---
 
 ## M1 — Storage and `cmsdb`
 
-**Goal.** A database file can be created, migrated, and checked.
+**Goal.** A database file can be created, migrated, and checked — and nothing
+except `cmsdb init` can bring one into existence.
+
+Read `DESIGN.md` §13 in full before writing a line of this milestone. Most of it
+is about what these commands must refuse to do.
 
 **Work.**
 - `internal/migrate`: `//go:embed schema/*.sql`, ordered, applied through
-  `sqlitemigration`. Append-only; a released migration is never edited.
-- `internal/store`: pool construction per `DESIGN.md` §13 — WAL,
-  `foreign_keys=ON`, `busy_timeout`, a read pool and one serialized writer.
+  `sqlitemigration`. The application ID is a constant here: `0x434D5330`, the
+  ASCII bytes of `CMS0`, `1129141040` decimal, passed as
+  `sqlitemigration.Schema.AppID`. Schema version bookkeeping is
+  `PRAGMA user_version`, maintained by `sqlitemigration`. **No
+  `schema_migrations` table and no hand-rolled version tracking.**
+- `internal/store`: two entry points and one shared name.
+  - The database file name is the unexported constant `cms.db`. Both entry
+    points take a **directory** path and join it.
+  - `Create(dir)` — used only by `cmsdb init`. Fails if `dir` does not exist.
+    **Never creates a directory.** Opens with explicit flags including
+    `OpenCreate`, applies migrations, stamps the application ID.
+  - `Open(dir)` — used by every other `cmsdb` subcommand and by `cmsd`. Fails if
+    `dir` does not exist, fails if `cms.db` does not exist, and **never names
+    `OpenCreate`**. Verifies the application ID and the schema version; the
+    caller says whether a version behind the binary is an error (`cmsd`) or a
+    prompt to migrate (`cmsdb migrate up`).
+  - Pool construction per `DESIGN.md` §13.3 — WAL on persistent stores,
+    `foreign_keys=ON` on every connection of every store including in-memory,
+    `busy_timeout`, a read pool and one serialized writer. Explicit open flags
+    everywhere; the zero value creates.
 - `internal/clock`: `Clock`, `Real`, `Fake`.
 - `internal/ids`: ULID generation.
 - `cmsdb init`, `cmsdb migrate status|up [--to N]`, `cmsdb check`, `cmsdb vacuum`.
 - `cmsdb check` runs `PRAGMA foreign_key_check`, `PRAGMA integrity_check`, and
-  reports stuck job leases and orphaned resources (both empty for now).
+  reports stuck job leases and orphaned resources (both empty for now). It also
+  reports the application ID and schema version it found.
+- `cmsd serve` gains `--db DIR`. It calls `Open`, requires an exact schema
+  version match, and exits non-zero without a listener on any failure. It does
+  not gain a `--migrate` flag, a `--create` flag, or any other way to say yes.
 
 **Acceptance.**
-1. `cmsdb init --db /tmp/x.db` creates a file; running it twice is safe and
-   reports "already initialised".
-2. `cmsdb migrate status` lists applied and pending migrations.
-3. Applying migrations to an empty database and to a partially-migrated one both
+1. `mkdir -p /tmp/x && cmsdb init --db /tmp/x` creates `/tmp/x/cms.db`; running
+   it twice is safe and reports "already initialised".
+2. **`cmsdb init --db /tmp/does-not-exist` exits non-zero, names the directory,
+   and creates nothing.** A test asserts the directory still does not exist
+   afterwards. The same test exists for every other `cmsdb` subcommand and for
+   `cmsd serve`.
+3. **`grep -rn "MkdirAll\|os.Mkdir" ./internal ./cmd` returns nothing.** This is
+   a CI step, not a habit.
+4. A freshly initialised database has `PRAGMA application_id = 0x434D5330` and
+   `PRAGMA user_version` equal to the number of embedded migrations. Assert both
+   by reading the pragmas from a second, independent connection.
+5. `cmsdb migrate status` lists applied and pending migrations, and prints the
+   application ID and version it read.
+6. Applying migrations to an empty database and to a partially-migrated one both
    converge to the same schema. Test by comparing `sqlite_schema` dumps.
-4. A store test opens an in-memory database, applies all migrations, and writes
-   and reads one row.
-5. Concurrent writers do not produce `SQLITE_BUSY`: a test spawning 20
+7. A store test opens an in-memory database, applies all migrations, and writes
+   and reads one row. A second test asserts `PRAGMA foreign_keys` is `1` on a
+   connection drawn from the in-memory pool, and that a violating insert is
+   rejected by result code.
+8. `PRAGMA journal_mode` is `wal` on a persistent store.
+9. Concurrent writers do not produce `SQLITE_BUSY`: a test spawning 20
    goroutines each doing 50 writes passes under `-race`.
+10. **`cmsd serve` against a directory with no `cms.db` exits non-zero and binds
+   nothing.** Assert that no file was created and that nothing is listening.
+11. **`cmsd serve` against a file whose `application_id` is wrong exits non-zero
+   and binds nothing.** Two variants, both real failure modes: a zero-length
+   file (`application_id` 0, which `sqlitemigration` would have adopted), and a
+   valid SQLite database stamped with a different ID.
+12. **`cmsd serve` against a database one migration behind exits non-zero,
+   binds nothing, and leaves `user_version` unchanged.** The same for a database
+   one migration ahead. Assert the version afterwards — a server that migrated
+   and then failed for another reason must not pass this test.
+13. The error message for each of 10–12 names the expected and the actual value
+   and the path it opened. A test asserts on the message, because these are the
+   messages an operator reads at three in the morning.
 
-**Out of scope.** Any domain table beyond a `migrations` bookkeeping table.
+**Out of scope.** Any domain table beyond what the first migration needs. A
+schema-version-tracking table of our own — the pragmas are the bookkeeping.
 
 ---
 

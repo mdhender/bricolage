@@ -39,7 +39,9 @@ implement this document, but they are where the "why" is written down.
 |---|---|
 | Language | **Go 1.25 or later** — this is a hard floor, see below |
 | Database | SQLite, via `zombiezen.com/go/sqlite` |
-| Migrations | `zombiezen.com/go/sqlite/sqlitemigration` |
+| Migrations | `zombiezen.com/go/sqlite/sqlitemigration` — `PRAGMA user_version`, never a table of our own |
+| Application ID | `0x434D5330` — ASCII `CMS0`, `1129141040` (§13.2) |
+| Database file | always `cms.db`, inside a directory `--db` names and nothing creates (§13.1) |
 | HTTP routing | standard library `net/http.ServeMux` only — **no third-party router** |
 | CSRF | standard library `net/http.CrossOriginProtection` (Go 1.25) |
 | Server-rendered UI | `html/template` + HTMX, as an API client (§3) |
@@ -145,7 +147,8 @@ internal/
   render/           template lookup + execution
   api/              JSON REST handlers, request/response types
   web/              HTMX handlers and html/template files
-  web/devroutes/    build-tagged `/__development/*` handlers; stub when untagged
+  web/devroutes/    the `/__development/*` handlers; registered only in development
+  server/           the composition root: the route table, and the one shutdown path
   buildenv/         the build/environment interlock (§14); the only tagged files
   clock/            Clock interface and implementations
   ids/              external identifier generation
@@ -158,6 +161,23 @@ testdata/           fixtures
 `workflow`, `authz`, `publish`, `jobs`, `events` sit conceptually beside
 `service`: they hold logic too specific to be `domain` and too reusable to be a
 single service method. They may import `domain` and `store`, not `api` or `web`.
+
+`server` sits above the transports and holds no business logic. It exists
+because two things have nowhere else to live. The first is the route table:
+`api`, `web`, and `web/devroutes` each own their handlers, but something has to
+decide which of them are mounted, and that decision *is* the gate on the
+development routes (§11). Building the table is a function rather than a side
+effect of serving, so `cmsd routes` prints the table the running configuration
+actually produces instead of a second list that can drift from it — the same
+call registers the handlers and records the patterns. The second is the single
+graceful-shutdown path reached by `SIGTERM`, by `--timeout`, and by the
+development shutdown route alike. Both belong below `cmd/`, which is flags and
+wiring, and neither belongs to `api` or to `web`, which would each have to know
+about the other.
+
+`web/devroutes` carries **no build tag**, despite what an earlier draft of this
+section said. The resolved environment is the only gate (§11); the handlers are
+simply never added to the mux in any other environment.
 
 ### Existing code
 
@@ -842,14 +862,21 @@ does not compile at save time, not at fire time.
 ### `cmsdb` — database lifecycle
 
 ```
-cmsdb init            --db PATH               create the file, apply all migrations
-cmsdb migrate status  --db PATH               show applied/pending
-cmsdb migrate up      --db PATH [--to N]      apply pending migrations
-cmsdb bootstrap admin --db PATH --email E --name N [--password-stdin]
-cmsdb seed            --db PATH [--demo]      default workflow, roles, site, element types
-cmsdb check           --db PATH               integrity: FK check, orphaned resources, stuck leases
-cmsdb vacuum          --db PATH
+cmsdb init            --db DIR                create DIR/cms.db, apply all migrations
+cmsdb migrate status  --db DIR                show applied/pending
+cmsdb migrate up      --db DIR [--to N]       apply pending migrations
+cmsdb bootstrap admin --db DIR --email E --name N [--password-stdin]
+cmsdb seed            --db DIR [--demo]       default workflow, roles, site, element types
+cmsdb check           --db DIR                integrity: FK check, orphaned resources, stuck leases
+cmsdb vacuum          --db DIR
 ```
+
+**`--db` names an existing directory, and the database inside it is always
+`cms.db` (§13.1).** `cmsdb` never creates a directory: a missing `DIR` is a hard
+failure naming the directory, in every subcommand including `init`. `init` is
+the only subcommand permitted to create the database file, and it stamps the
+application ID `0x434D5330` while applying migrations; every other subcommand
+opens an existing database and fails if the application ID does not match.
 
 `bootstrap admin` reads a password from stdin, or generates one and prints it
 **once** to stdout. It never accepts a password as a command-line flag —
@@ -862,11 +889,18 @@ message.
 ### `cmsd` — the server
 
 ```
-cmsd serve --db PATH [--addr 127.0.0.1:18443] [--workers N] [--config FILE]
+cmsd serve --db DIR [--addr 127.0.0.1:18443] [--workers N] [--config FILE]
            [--env development|production] [--timeout DURATION]
 cmsd routes                       print the route table and exit
 cmsd version                      version, commit, Go version
 ```
+
+**`cmsd` never creates a directory, never creates a database, and never runs a
+migration.** It opens `DIR/cms.db`, requires the application ID to be
+`0x434D5330`, and requires `PRAGMA user_version` to equal the number of
+migrations the binary embeds. Any of those four conditions failing is a hard
+failure: one log line naming expected and actual, a non-zero exit, and no
+listener. The reasoning and the exact checks are in §13.4.
 
 `--env` defaults to `production` (§14). `--timeout` shuts down gracefully after
 the given duration; `0`, the default, means never. The `/__development/*` routes
@@ -1197,25 +1231,144 @@ the created resource and return the same result on replay.
 
 ## 13. Persistence rules
 
-These are not suggestions. SQLite punishes casual concurrency.
+These are not suggestions. SQLite punishes casual concurrency, and it is
+cheerfully willing to create a database nobody asked for.
 
-- **WAL mode**, `foreign_keys = ON`, `busy_timeout` set on every connection.
+### 13.1 Where the database lives
+
+**A store path names a directory that already exists. The database file inside
+it is always `cms.db`.**
+
+```
+cmsdb init  --db ./var       creates ./var/cms.db    fails if ./var is missing
+cmsd  serve --db ./var       opens   ./var/cms.db    fails if either is missing
+```
+
+The file name is a constant in `internal/store`. It is not a flag, not a
+configuration key, and not a parameter, so `--db` cannot address two different
+files depending on which command was typed.
+
+**Nothing in this system ever creates a directory.** Not `cmsdb`, not `cmsd`,
+not a test helper, not a convenience wrapper. `os.Mkdir` and `os.MkdirAll` do
+not appear anywhere in the database path. A missing directory is a hard failure
+that names the directory and exits non-zero; creating it is a human's decision.
+
+The reason is that a mistyped path is the most common way to end up with a
+second, empty database that looks exactly like the first. `cmsd serve --db
+./vsr` must stop, not quietly stand up an empty CMS in a directory that did not
+exist a moment earlier. A tool that creates what it cannot find turns a typo
+into a plausible-looking system with nothing in it, and the mistake surfaces
+hours later as "where did everything go".
+
+### 13.2 Application ID and schema version
+
+Every database this system creates carries **application ID `0x434D5330`** —
+the ASCII bytes of `CMS0` big-endian, `1129141040` decimal. It is a
+compile-time constant in `internal/migrate`.
+
+`sqlitemigration` maintains both markers, and we use it rather than rolling our
+own:
+
+- `sqlitemigration.Schema.AppID` writes and checks `PRAGMA application_id`.
+- The schema version is `PRAGMA user_version`, which `sqlitemigration`
+  increments once per applied migration, inside that migration's transaction.
+
+**Do not write a `schema_migrations` table.** The pragmas are the bookkeeping.
+A second record of the schema version is a second thing that can disagree with
+the database.
+
+One property of `sqlitemigration` matters enough to write down, because it is
+the gap `cmsd` has to close itself: its application-ID check accepts a database
+whose ID is `0` **when the database has no schema at all**, so that it can adopt
+a freshly created empty file. That is right for `cmsdb init` and wrong for
+`cmsd`, which must reject an empty file rather than adopt it. See §13.4.
+
+### 13.3 Connections
+
+- **`foreign_keys = ON` on every connection of every store**, persistent and
+  in-memory alike. It is a per-connection setting rather than a property of the
+  file, so one connection that skips it loses referential integrity for its
+  whole life while the rest of the process looks correct.
+- **WAL mode on persistent stores.** An in-memory database has no WAL; asking
+  for it there is a no-op at best.
+- **`busy_timeout` on every connection.**
+- **Open flags are always explicit.** The zero value of
+  `sqlitex.PoolOptions.Flags` and the no-flag form of `sqlite.OpenConn` both
+  mean `OpenReadWrite|OpenCreate|OpenWAL|OpenURI` — they *create*. Every open in
+  this system names its flags, and only the create path names `OpenCreate`.
 - **One writer.** Use a `sqlitex.Pool` for readers and a **single** dedicated
   write connection, serialized. Do not let N goroutines open write transactions
   and hope `busy_timeout` sorts it out.
+
+### 13.4 Who may create, migrate, and open
+
+`internal/store` exposes a create path and an open path, and the difference
+between them is the point:
+
+| | `cmsdb` | `cmsd` |
+|---|---|---|
+| Create a directory | never | never |
+| Create the database file | `init` only | **never** |
+| Apply migrations | yes | **never** |
+| Verify the application ID | yes | yes |
+| Verify the schema version | yes | yes, exact match |
+
+`cmsd` opens an existing database and verifies it. Each of the following is a
+hard failure: log one line naming the expected and the actual value, exit
+non-zero, serve nothing.
+
+1. **The directory does not exist.**
+2. **`cms.db` does not exist inside it.** `cmsd` opens without `OpenCreate`, so
+   SQLite returns `SQLITE_CANTOPEN`; detect it by result code (invariant 11),
+   never by matching the message.
+3. **`PRAGMA application_id` is not `0x434D5330`.** This catches the empty file,
+   a file belonging to another program, and a file belonging to a different CMS.
+4. **`PRAGMA user_version` is not exactly the number of migrations the binary
+   embeds.** Ahead means the binary is older than the database; behind means a
+   migration is pending. Both are wrong, and neither is `cmsd`'s to repair — the
+   operator runs `cmsdb migrate up` or deploys the matching binary.
+
+`cmsd` therefore never calls `sqlitemigration.NewPool` or
+`sqlitemigration.Migrate`, both of which migrate. It opens with
+`sqlitex.NewPool` and performs the four checks itself.
+
+A server that migrates on startup is a server that upgrades a production
+database because somebody restarted it. A server that creates a database is a
+server that comes up healthy and empty. Neither is a failure mode worth having,
+and both are indistinguishable from success in a health check.
+
+### 13.5 Schema and rows
+
 - **`STRICT` tables everywhere.** No affinity surprises.
 - **Timestamps are ISO-8601 UTC `TEXT`**, `2006-01-02T15:04:05.000Z`. Sortable,
   comparable in SQL, readable in a shell. Never store local time.
 - **Booleans are `INTEGER` 0/1.** SQLite has no boolean type.
 - **All SQL lives in `internal/store`.** No SQL string anywhere else, ever.
 - **No ORM, no query builder.** Hand-written SQL, named parameters.
-- **Every migration is append-only.** Once a migration file is committed and
-  released, it is never edited. Fix mistakes with a new migration.
 - **`store` methods take an explicit transaction handle** so that `service` can
   compose several into one transaction.
 - Internal identifiers are `INTEGER PRIMARY KEY`. External identifiers are the
   `uid` column, a lowercase ULID. **The API speaks only `uid`.** Integer ids
   never appear in a URL, a JSON body, or a log line intended for users.
+
+### 13.6 Migrations are append-only, after beta
+
+Once a migration file is committed and released it is never edited; mistakes are
+fixed with a new migration.
+
+**While the project is in beta this rule is suspended, deliberately.**
+Migrations may be squashed into one file and every existing database rebuilt
+from scratch. There is no sacred data in beta and no upgrade path is owed to
+anyone, so paying for one in accumulated migration files buys nothing.
+
+Squashing resets `user_version` to the new migration count, which is exactly why
+`cmsd` checks it (§13.4): a database left over from before a squash fails
+loudly on startup instead of being migrated forward along a path that no longer
+exists. `cmsdb init` against a fresh directory is the recovery, and in beta that
+is a complete answer.
+
+The exception ends at the first release whose data somebody else depends on. It
+is written down here so that its ending is a decision rather than an oversight.
 
 ## 14. Cross-cutting
 
@@ -1377,7 +1530,11 @@ header twice.
 - **`domain` is unit tested exhaustively.** It is pure; there is no excuse.
   Table-driven, including every guard and every URI format case.
 - **`store` is tested against a real SQLite database**, in-memory, with all
-  migrations applied by the same code path `cmsdb` uses. Not a mock.
+  migrations applied by the same code path `cmsdb` uses. Not a mock. An
+  in-memory store goes through the create path — it is the one place a database
+  comes into existence without `cmsdb init` — and it still sets
+  `foreign_keys = ON` on every connection (§13.3). A test that passes because
+  foreign keys were off is worse than no test.
 - **`service` is tested through its public methods** with a real store and a
   fake clock. Assert on emitted events as well as returned values — an operation
   that does not write its event is not finished.
@@ -1386,8 +1543,11 @@ header twice.
 - **Golden files** for rendering and for `earl --json` output. Regenerate with
   `go test ./... -update`.
 - **One end-to-end test per milestone**, driving `earl` against a `cmsd` on a
-  temporary database. This is the milestone's acceptance criterion made
-  executable.
+  temporary database. The harness uses `t.TempDir()` — which already exists —
+  and runs `cmsdb init` against it. **No test helper calls `os.MkdirAll`**, and
+  no test reaches past `store` to create a database some other way; a helper
+  that creates what the commands refuse to create is a hole in the rule big
+  enough to walk the production code through.
 
 Concurrency tests that matter, because these are where the original failed:
 

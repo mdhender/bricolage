@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Michael D Henderson.
 
-// Package config resolves configuration from flags, the environment, and a
-// file. This file implements the environment setting described in DESIGN.md
-// 14: one setting, two values, governing everything that should differ between
-// a developer's machine and a real deployment.
 package config
+
+// This file implements the environment setting described in DESIGN.md 14: one
+// setting, two values, governing everything that should differ between a
+// developer's machine and a real deployment. The package doc is in doc.go.
 
 import (
 	"fmt"

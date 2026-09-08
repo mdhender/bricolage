@@ -22,8 +22,7 @@
 # To run locally, start only cmsd:
 #
 #   brew services list | grep caddy    # expect "started"; if not, ask a human
-#   go build -tags dev -o bin/cmsd ./cmd/cmsd
-#   bin/cmsd serve --db ./dev.db --addr 127.0.0.1:18443 \
+#   go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 \
 #       --env development --timeout 60m
 #
 # Then open https://htmx-app.localhost:8443/
