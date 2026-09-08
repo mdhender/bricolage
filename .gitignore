@@ -3,3 +3,7 @@
 
 # build output
 deploy/linux/
+
+# local env overrides; these hold secrets (see internal/dotenv)
+.env.local
+.env.*.local

@@ -18,8 +18,9 @@ const (
 
 // Load uses the `joho/godotenv` package to load environment files in the working directory.
 //
-// The env must be one of "development", "test", "production", or "agents".
-// The "agents" environment is reserved for the coding agent's local work.
+// The env must be exactly "development" or "production". There is no third
+// value: more states mean more combinations nobody tests, and anything that is
+// not a developer's machine should behave like production. See DESIGN.md 14.
 //
 // Load the following files depending on `env`, with the first file having the highest precedence,
 // and .env having the lowest precedence:
@@ -30,13 +31,15 @@ const (
 // 3rd       .env.{{env}}         No           Never     Shared environment-specific variables
 // Lowest    .env                 No           Never     Shared for all environments
 //
-// WARNING: we are incompatible with bkeepers/dotenv since we load `.env.local` in test.
-// Read https://github.com/bkeepers/dotenv/issues/418 for the history of this decision.
+// `.env.local` is loaded in every environment. bkeepers/dotenv skips it under
+// test to keep local overrides out of test runs
+// (https://github.com/bkeepers/dotenv/issues/418); we have no test
+// environment, so the question does not arise.
 func Load(env string) error {
 	if env == "" {
 		return ErrMissingEnvironment
 	}
-	if env != "development" && env != "test" && env != "production" && env != "agents" {
+	if env != "development" && env != "production" {
 		return ErrUnknownEnvironment
 	}
 

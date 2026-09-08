@@ -23,8 +23,13 @@ func TestLoadRejectsMissingEnv(t *testing.T) {
 }
 
 func TestLoadRejectsUnknownEnv(t *testing.T) {
-	if err := Load("staging"); !errors.Is(err, ErrUnknownEnvironment) {
-		t.Fatalf("Load(%q) = %v, want ErrUnknownEnvironment", "staging", err)
+	// "test" and "agents" were accepted once and are deliberately not any more;
+	// they are here so that dropping them cannot silently regress. Only the
+	// exact lowercase strings "development" and "production" are environments.
+	for _, env := range []string{"staging", "test", "agents", "dev", "prod", "Development", "PRODUCTION", " production"} {
+		if err := Load(env); !errors.Is(err, ErrUnknownEnvironment) {
+			t.Errorf("Load(%q) = %v, want ErrUnknownEnvironment", env, err)
+		}
 	}
 }
 
@@ -32,7 +37,7 @@ func TestLoadAcceptsKnownEnvs(t *testing.T) {
 	// No .env files exist in the temp dir, so a known env loads nothing and
 	// returns nil; an unknown env is rejected before reaching that point.
 	t.Chdir(t.TempDir())
-	for _, env := range []string{"development", "test", "production", "agents"} {
+	for _, env := range []string{"development", "production"} {
 		if err := Load(env); err != nil {
 			t.Errorf("Load(%q) = %v, want nil", env, err)
 		}
@@ -72,7 +77,7 @@ func TestLoadMissingFilesAreSkipped(t *testing.T) {
 	// Only the shared, lowest-priority .env exists.
 	write(t, filepath.Clean(".env"), key+"=shared\n")
 
-	if err := Load("test"); err != nil {
+	if err := Load("production"); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if got := os.Getenv(key); got != "shared" {
