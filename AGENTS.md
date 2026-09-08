@@ -332,6 +332,34 @@ These are not style preferences. Violating one is a bug even if the tests pass.
   to create is a hole in invariant 19 wide enough for the production code.
 - Concurrency tests run under `-race`.
 
+## Committing
+
+**Committing and pushing to `main` is authorised for the duration of the beta.**
+You do not need to ask first. What decides where a commit goes is whether there
+is an issue:
+
+- **No issue: commit straight to `main`.** Do not open a branch for it.
+- **Working an issue: always work on a branch**, and reference the issue in
+  every commit message on it — `Refs #1` while the work is in progress,
+  `Closes #1` on the commit that finishes it. Close the issue when the work is
+  complete: a merged `Closes` does it, and otherwise close it explicitly with
+  `gh issue close`. An issue left open after its work has shipped is a lie in
+  the same way a rule column nothing reads is (invariant 6).
+
+### The version bump
+
+**Every commit that changes code bumps the version in `version.go`, in that
+same commit.** Documentation-only changes do not bump — a version that moves
+when nothing executable changed tells you nothing about what is running.
+
+The bump is semantic: **patch for a fix, minor for a feature.** `PreRelease`
+stays `beta` until the project moves to release.
+
+Keeping the bump in the commit that earns it is the point. A separate "bump
+version" commit means the version in any given tree is the version of some
+earlier tree, and `cmsd version` — the thing an operator reads off a running
+server — stops naming the code that is running.
+
 ## Pull requests
 
 - One milestone per branch where practical; one coherent change otherwise.
@@ -341,7 +369,6 @@ These are not style preferences. Violating one is a bug even if the tests pass.
   `gh pr create --assignee @me ...`, `gh issue create --assignee @me ...`.
   If the account lacks permission to set assignees, create it without and say
   so rather than treating it as a failure.
-- Do not commit or push unless asked.
 
 ## When you are stuck
 
