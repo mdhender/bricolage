@@ -8,8 +8,12 @@ GO      ?= go
 COMMANDS := cmsdb cmsd earl
 RELEASE_DIR := deploy/linux/amd64
 
+# The local database directory. It is git-ignored, and no target creates it:
+# --db names a directory that must already exist (invariant 19).
+DEV_DB  ?= ./var
+
 .DEFAULT_GOAL := check
-.PHONY: check build test race vet fmt lint no-mkdir no-dev-routes tagged dev release clean help
+.PHONY: check build test race vet fmt lint no-mkdir no-dev-routes tagged dev init status release clean help
 
 ## check: the full gate. Run this before opening a PR.
 check: fmt vet lint build test race tagged
@@ -77,16 +81,33 @@ no-dev-routes:
 	fi
 	$(GO) test -run 'TestDevRoutes|TestRouteTable' ./internal/server/ ./internal/web/devroutes/
 
-## dev: run cmsd in development, behind the Caddy service.
+## dev: run cmsd in development, behind the Caddy service, against ./var.
 ##
 ## This target does NOT start Caddy. Caddy is a machine-wide Homebrew service
 ## reading /opt/homebrew/etc/Caddyfile; running it yourself mints a second CA
 ## root with the same subject name and breaks HTTPS to *.localhost at random.
 ## If it is not started, ask a human: brew services start caddy
+##
+## It does NOT create $(DEV_DB) either, and it must not: --db names a directory
+## that has to exist already, and nothing in this system creates one
+## (invariant 19). "mkdir var && make init" is the first-run recipe.
 dev:
 	@brew services list 2>/dev/null | grep -q '^caddy.*started' \
 		|| echo "warning: the Caddy service does not look started; ask a human for 'brew services start caddy'"
-	$(GO) run ./cmd/cmsd serve --env development --timeout 60m
+	@test -d $(DEV_DB) || { \
+		echo "$(DEV_DB) does not exist. Create it yourself, then run 'make init':"; \
+		echo "    mkdir $(DEV_DB) && make init"; exit 1; }
+	$(GO) run ./cmd/cmsd serve --db $(DEV_DB) --env development --timeout 60m
+
+## init: create $(DEV_DB)/cms.db and apply every migration.
+##
+## The directory is yours to create; this only fills it.
+init:
+	$(GO) run ./cmd/cmsdb init --db $(DEV_DB)
+
+## status: show the schema version and the applied and pending migrations.
+status:
+	$(GO) run ./cmd/cmsdb migrate status --db $(DEV_DB)
 
 ## release: cross-compile the three commands for the server.
 ##

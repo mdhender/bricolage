@@ -106,10 +106,20 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 is complete and M1 has not started: `cmsd` serves `/healthz` and the
-development shutdown route, opens no database, and has no `--db` flag. Most
-packages under `internal/` are a `doc.go` stating the package's responsibility
-and permitted imports — read that doc before adding the first real file to one.
+M0 and M1 are complete and M2 has not started. `cmsdb` can `init`, `migrate
+status`, `migrate up [--to N]`, `check`, and `vacuum`; `cmsd serve` requires
+`--db DIR`, opens `DIR/cms.db`, and refuses to start on any of the four failures
+in `DESIGN.md` §13.4. The schema is two migrations —
+`internal/migrate/schema/0001_users.sql` and `0002_events.sql` — and nothing
+writes to either table yet. `internal/{migrate,store,ids,clock}` are real;
+`internal/domain` holds only its sentinel errors. The remaining packages under
+`internal/` are a `doc.go` stating the package's responsibility and permitted
+imports — read that doc before adding the first real file to one.
+
+`--db` names a **directory** that must already exist; the database inside it is
+always `cms.db`. Only `cmsdb init` creates a database and only `cmsdb` migrates
+one. `cmsd` has no `--migrate` flag, no `--create` flag, and no other way to say
+yes.
 
 `pkg/way` is deleted and nothing replaces it; routing is `net/http.ServeMux`
 patterns. Go 1.25 is a hard floor (`net/http.CrossOriginProtection` is the CSRF

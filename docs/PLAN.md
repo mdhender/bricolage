@@ -161,6 +161,15 @@ Read `DESIGN.md` §13 in full before writing a line of this milestone. Most of i
 is about what these commands must refuse to do.
 
 **Work.**
+- The first migration. Two files, because two are the fewest that make
+  acceptance 6 and 7 mean anything: `0001_users.sql` and `0002_events.sql`.
+  `users` carries only the identity columns M2 cannot change — the surrogate
+  key, the `uid`, and the email and name `bootstrap admin` is given — and is
+  here because every foreign key in the schema eventually points at it.
+  `events` is `DESIGN.md` §10 unchanged, and is here because §10 says to wire
+  the audit spine from the first milestone that has a schema; its `actor_id`
+  foreign key is what acceptance 7's violating insert violates. Nothing writes
+  to either table in M1.
 - `internal/migrate`: `//go:embed schema/*.sql`, ordered, applied through
   `sqlitemigration`. The application ID is a constant here: `0x434D5330`, the
   ASCII bytes of `CMS0`, `1129141040` decimal, passed as
@@ -229,8 +238,9 @@ is about what these commands must refuse to do.
    and the path it opened. A test asserts on the message, because these are the
    messages an operator reads at three in the morning.
 
-**Out of scope.** Any domain table beyond what the first migration needs. A
-schema-version-tracking table of our own — the pragmas are the bookkeeping.
+**Out of scope.** Any domain table beyond what the first migration needs — see
+the first bullet above for what that turned out to be. A schema-version-tracking
+table of our own — the pragmas are the bookkeeping.
 
 ---
 
@@ -239,7 +249,8 @@ schema-version-tracking table of our own — the pragmas are the bookkeeping.
 **Goal.** A person can be created, can log in, and their effective privilege
 over a scope can be computed.
 
-**Schema.** `users`, `roles`, `user_roles`, `grants`, `sessions`.
+**Schema.** `roles`, `user_roles`, `grants`, `sessions`, and the credential
+columns on `users`, whose identity columns M1's first migration already created.
 `sessions(id, user_id, token_sha256, created_at, expires_at, last_seen_at)`.
 
 **Work.**

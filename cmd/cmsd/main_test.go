@@ -98,6 +98,25 @@ func run(t *testing.T, bin string, env []string, args ...string) (stdout, stderr
 	return out.String(), errb.String(), code
 }
 
+// initDB creates a database in a fresh temporary directory and returns the
+// directory, which is what --db names (DESIGN.md 13.1).
+//
+// It runs the real "cmsdb init" rather than reaching into internal/store,
+// because the point of these tests is the commands. t.TempDir already exists,
+// which is the only reason this helper needs no mkdir: no test helper creates
+// a directory in the database path, because a helper that creates what the
+// commands refuse to create is a hole in invariant 19 wide enough for the
+// production code.
+func initDB(t *testing.T, cmsdb string) string {
+	t.Helper()
+	dir := t.TempDir()
+	stdout, stderr, code := run(t, cmsdb, nil, "init", "--db", dir)
+	if code != 0 {
+		t.Fatalf("cmsdb init --db %s exited %d\nstdout: %s\nstderr: %s", dir, code, stdout, stderr)
+	}
+	return dir
+}
+
 // TestCommands covers the process-level M0 acceptance criteria. It builds
 // once and runs everything against those binaries.
 func TestCommands(t *testing.T) {
@@ -162,7 +181,7 @@ func TestCommands(t *testing.T) {
 	// Acceptance 8, at the process level and over a real socket. This one
 	// gates release.
 	t.Run("dev routes are 404 with the default environment", func(t *testing.T) {
-		proc := start(t, bin["cmsd"], []string{"CMS_ENV="}, "serve", "--addr", "127.0.0.1:0", "--timeout", "30s")
+		proc := start(t, bin["cmsd"], []string{"CMS_ENV="}, "serve", "--db", initDB(t, bin["cmsdb"]), "--addr", "127.0.0.1:0", "--timeout", "30s")
 
 		for _, path := range []string{"/__development/shut-it-down", "/__development/log-me-in/a@b.c"} {
 			resp, err := http.Get(proc.url + path)
@@ -185,7 +204,7 @@ func TestCommands(t *testing.T) {
 	// Acceptance 10: the response is fully received before the process exits,
 	// and the process then exits 0. Assert on the body, not just the code.
 	t.Run("dev shutdown flushes then exits 0", func(t *testing.T) {
-		proc := start(t, bin["cmsd"], nil, "serve", "--env", "development", "--addr", "127.0.0.1:0", "--timeout", "60s")
+		proc := start(t, bin["cmsd"], nil, "serve", "--db", initDB(t, bin["cmsdb"]), "--env", "development", "--addr", "127.0.0.1:0", "--timeout", "60s")
 
 		resp, err := http.Get(proc.url + "/__development/shut-it-down")
 		if err != nil {
@@ -219,7 +238,7 @@ func TestCommands(t *testing.T) {
 	// shutdown, so the exit code is 0.
 	t.Run("timeout exits 0", func(t *testing.T) {
 		began := time.Now()
-		proc := start(t, bin["cmsd"], nil, "serve", "--addr", "127.0.0.1:0", "--timeout", "2s")
+		proc := start(t, bin["cmsd"], nil, "serve", "--db", initDB(t, bin["cmsdb"]), "--addr", "127.0.0.1:0", "--timeout", "2s")
 		code := proc.wait(t, 20*time.Second)
 		elapsed := time.Since(began)
 

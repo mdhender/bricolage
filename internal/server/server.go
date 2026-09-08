@@ -122,6 +122,16 @@ func New(opts Options) (*Server, error) {
 // Addr returns the configured listen address.
 func (s *Server) Addr() string { return s.addr }
 
+// Resolution renders where the environment came from, in the same words the
+// startup banner uses. "cmsd routes" prints it above the table, so the table
+// is never read without the setting that produced it.
+func (s *Server) Resolution() string {
+	if s.resolution == nil {
+		return "environment=" + s.env.String()
+	}
+	return s.resolution.String()
+}
+
 // Routes returns the table, exactly as registered.
 func (s *Server) Routes() []Route { return s.routes }
 

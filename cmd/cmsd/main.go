@@ -4,11 +4,17 @@
 // workers. It speaks plain HTTP on loopback and never terminates TLS; a
 // reverse proxy does that (DESIGN.md 11, invariant 15).
 //
+// It opens the database named by --db and verifies it, and it does nothing
+// else to it: it never creates a directory, never creates a database, and
+// never runs a migration (DESIGN.md 13.4, invariants 20 and 21). There is no
+// --migrate flag and no --create flag, because there is no way to say yes.
+//
 // This file is flags and wiring. Behaviour lives in internal/server.
 package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,7 +23,9 @@ import (
 	"github.com/mdhender/bricolage"
 	"github.com/mdhender/bricolage/internal/buildenv"
 	"github.com/mdhender/bricolage/internal/config"
+	"github.com/mdhender/bricolage/internal/migrate"
 	"github.com/mdhender/bricolage/internal/server"
+	"github.com/mdhender/bricolage/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -41,6 +49,11 @@ type flags struct {
 	env     string
 	addr    string
 	timeout time.Duration
+
+	// db is the directory holding cms.db. It is on serve and not on routes,
+	// because the route table does not depend on it and a flag that is parsed
+	// and ignored is worse than no flag.
+	db string
 }
 
 func newRootCmd() *cobra.Command {
@@ -76,20 +89,42 @@ func newServeCmd(f *flags) *cobra.Command {
 		Short: "Serve until a signal, a timeout, or a shutdown request",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			srv, _, err := build(f)
+			srv, log, err := build(f)
 			if err != nil {
 				return err
 			}
+
+			// The database is opened and verified before anything binds a
+			// port. Every failure in DESIGN.md 13.4 — a missing directory, a
+			// missing cms.db, a wrong application_id, a schema version that is
+			// not an exact match — returns here, with no listener and nothing
+			// created. An operator runs "cmsdb migrate up" or fixes the path;
+			// cmsd owns no way to repair it.
+			db, err := store.Open(cmd.Context(), f.db, store.Options{})
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			log.Info("database opened",
+				"path", db.Path(),
+				"user_version", db.SchemaVersion(),
+				"migrations", migrate.Count(),
+			)
 
 			// SIGTERM and SIGINT reach the same shutdown path as --timeout and
 			// the development route (invariant 17).
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
+			// The deferred Close is the tail of that one path: it runs after
+			// Run has stopped accepting and drained, not on a second one.
 			return srv.Run(ctx)
 		},
 	}
 	addServeFlags(cmd, f)
+	cmd.Flags().StringVar(&f.db, "db", "",
+		"directory holding cms.db; it must already exist, and cmsd neither creates nor migrates it")
+	_ = cmd.MarkFlagRequired("db")
 	return cmd
 }
 
@@ -103,12 +138,12 @@ func newRoutesCmd(f *flags) *cobra.Command {
 			"environment is exactly \"development\".",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			srv, res, err := build(f)
+			srv, _, err := build(f)
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, res.String())
+			fmt.Fprintln(out, srv.Resolution())
 			for _, r := range srv.Routes() {
 				if r.Note == "" {
 					fmt.Fprintln(out, r.Pattern)
@@ -139,9 +174,9 @@ func addServeFlags(cmd *cobra.Command, f *flags) {
 		"shut down gracefully after this duration; 0 means never")
 }
 
-// build resolves the flags into a Server. It is shared by serve and routes so
-// that neither can drift from the other.
-func build(f *flags) (*server.Server, config.Resolution, error) {
+// build resolves the flags into a Server and the logger that goes with it. It
+// is shared by serve and routes so that neither can drift from the other.
+func build(f *flags) (*server.Server, *slog.Logger, error) {
 	res := config.Resolve(config.Inputs{
 		Flag: f.env,
 		Env:  config.FromEnv(),
@@ -165,7 +200,7 @@ func build(f *flags) (*server.Server, config.Resolution, error) {
 		Resolution:  &res,
 	})
 	if err != nil {
-		return nil, res, err
+		return nil, nil, err
 	}
-	return srv, res, nil
+	return srv, log, nil
 }

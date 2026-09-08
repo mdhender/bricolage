@@ -56,7 +56,7 @@ internal/{api,web}      transports
 internal/web/devroutes  the /__development/* handlers; no build tag gates them
 internal/server         composition root: the route table, the one shutdown path
 internal/{clock,ids,config,buildenv}
-schema/                 .sql migrations, embedded
+internal/migrate/schema .sql migrations, embedded via go:embed
 deploy/                 reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
 testdata/               fixtures
 ```

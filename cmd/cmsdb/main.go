@@ -3,10 +3,11 @@
 // Command cmsdb initialises, migrates, bootstraps, seeds, and checks the
 // database (DESIGN.md 11).
 //
-// In M0 it prints its version and nothing else. The subcommands arrive in M1,
-// under the rules in DESIGN.md 13.4: --db names a directory that must already
-// exist, the database inside it is always cms.db, and init is the only
-// subcommand permitted to create it.
+// --db names a directory that must already exist, and the database inside it
+// is always cms.db. cmsdb never creates a directory: a missing DIR is a hard
+// failure naming the directory, in every subcommand including init
+// (invariant 19). init is the only subcommand permitted to create the database
+// file, and cmsdb is the only command permitted to migrate one (invariant 20).
 //
 // This file is flags and wiring. Behaviour lives in internal/.
 package main
@@ -48,5 +49,22 @@ func newRootCmd() *cobra.Command {
 			return nil
 		},
 	})
+	root.AddCommand(
+		newInitCmd(),
+		newMigrateCmd(),
+		newCheckCmd(),
+		newVacuumCmd(),
+	)
 	return root
+}
+
+// addDBFlag gives a subcommand the --db flag, which every subcommand has and
+// none may do without.
+//
+// It names a directory, never a file. The database inside it is the constant
+// cms.db, so --db cannot address two different files depending on which
+// subcommand was typed (DESIGN.md 13.1).
+func addDBFlag(cmd *cobra.Command, dir *string) {
+	cmd.Flags().StringVar(dir, "db", "", "directory holding cms.db; it must already exist")
+	_ = cmd.MarkFlagRequired("db")
 }

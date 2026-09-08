@@ -153,7 +153,7 @@ internal/
   clock/            Clock interface and implementations
   ids/              external identifier generation
   config/           configuration loading and defaults
-schema/             .sql migration files, embedded via go:embed
+  migrate/schema/   .sql migration files, embedded via go:embed
 deploy/             reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
 testdata/           fixtures
 ```
@@ -174,6 +174,12 @@ graceful-shutdown path reached by `SIGTERM`, by `--timeout`, and by the
 development shutdown route alike. Both belong below `cmd/`, which is flags and
 wiring, and neither belongs to `api` or to `web`, which would each have to know
 about the other.
+
+The migration files live in `internal/migrate/schema/` rather than at the
+repository root, which is where an earlier draft of this diagram put them.
+`go:embed` cannot reach outside the directory of the package that declares it,
+and the runner that reads them is `internal/migrate`. Nothing else may embed
+them, so there is no reason for them to be anywhere else.
 
 `web/devroutes` carries **no build tag**, despite what an earlier draft of this
 section said. The resolved environment is the only gate (§11); the handlers are
