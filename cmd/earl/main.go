@@ -5,9 +5,10 @@
 // It is a first-class client and the acceptance-test harness for every
 // milestone, not a debug toy: if earl cannot do it, the API is incomplete.
 //
-// In M0 it prints its version and nothing else. It points at the public origin
-// rather than at the Go listener, so that it exercises the proxy hop that
-// exists in production; that arrives with "earl login" in M2.
+// It points at the public origin rather than at the Go listener, so that it
+// exercises the proxy hop that exists in production. Talking to
+// 127.0.0.1:18443 directly bypasses the proxy and exercises a path that does
+// not exist there (DESIGN.md 11).
 //
 // This file is flags and wiring. Behaviour lives in internal/.
 package main
@@ -40,6 +41,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	root.AddCommand(newLoginCmd(), newLogoutCmd(), newWhoamiCmd(), newAdminCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the version, commit, and Go version",

@@ -13,7 +13,7 @@ RELEASE_DIR := deploy/linux/amd64
 DEV_DB  ?= ./var
 
 .DEFAULT_GOAL := check
-.PHONY: check build test race vet fmt lint no-mkdir no-dev-routes tagged dev init status release clean help
+.PHONY: check build test race vet fmt lint no-mkdir no-dev-routes tagged dev init seed bootstrap status release clean help
 
 ## check: the full gate. Run this before opening a PR.
 check: fmt vet lint build test race tagged
@@ -101,9 +101,27 @@ dev:
 
 ## init: create $(DEV_DB)/cms.db and apply every migration.
 ##
-## The directory is yours to create; this only fills it.
+## The directory is yours to create; this only fills it. The first-run recipe
+## is "mkdir var && make init seed bootstrap".
 init:
 	$(GO) run ./cmd/cmsdb init --db $(DEV_DB)
+
+## seed: create the default roles, their grants, and one site.
+##
+## Run it before "make bootstrap": the admin role is seeded and bootstrap
+## assigns it.
+seed:
+	$(GO) run ./cmd/cmsdb seed --db $(DEV_DB)
+
+## bootstrap: create the first administrator and print a password once.
+##
+## The password is generated and shown exactly once; nothing stores it. It is
+## never a flag, because arguments are visible in "ps" and land in shell
+## history. Override EMAIL and NAME to use your own.
+EMAIL ?= admin@example.com
+NAME  ?= Admin
+bootstrap:
+	$(GO) run ./cmd/cmsdb bootstrap admin --db $(DEV_DB) --email $(EMAIL) --name "$(NAME)"
 
 ## status: show the schema version and the applied and pending migrations.
 status:

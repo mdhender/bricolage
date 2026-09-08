@@ -382,11 +382,6 @@ func TestMemoryStoreWritesAndReadsARow(t *testing.T) {
 	}
 }
 
-// timeFormat is the timestamp shape DESIGN.md 13.5 requires: ISO-8601 UTC,
-// sortable and comparable in SQL. It is here rather than exported because
-// nothing outside store writes a timestamp column.
-const timeFormat = "2006-01-02T15:04:05.000Z"
-
 // TestForeignKeysAreOnEveryConnection is PLAN.md M1 acceptance 7, second half,
 // and invariant 22. Foreign keys are a per-connection setting, so one
 // connection that skips them is silently wrong for its whole life while the

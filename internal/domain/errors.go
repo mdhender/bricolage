@@ -28,4 +28,17 @@ var (
 	// It is separate from ErrForbidden because a guard is a statement about
 	// the document, not about the person (DESIGN.md 6.1).
 	ErrGuardFailed = errors.New("guard failed")
+
+	// ErrInvalid is returned when the input is malformed rather than refused:
+	// a privilege name that is not one, a body that will not parse, content
+	// that does not validate. It is the 422 of the table in DESIGN.md 12,
+	// where every other sentinel here is a 401, 403, 404, or 409.
+	ErrInvalid = errors.New("invalid")
+
+	// ErrUnauthenticated is returned when there is no caller to speak of: no
+	// credential, one that does not name a session, or a session that has
+	// expired. It is separate from ErrForbidden because the two are different
+	// answers to the person reading them -- "log in" against "you may not" --
+	// and because they are different status codes at the edge.
+	ErrUnauthenticated = errors.New("unauthenticated")
 )

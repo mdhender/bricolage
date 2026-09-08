@@ -30,13 +30,23 @@
 //     connection from another machine.
 //  3. Every request that reaches a handler here logs at WARN.
 //
-// Permitted imports: the standard library. It is handed what it needs.
+// Permitted imports: the standard library, and internal/domain for its
+// sentinel errors. Nothing that can perform I/O, open a database, read a flag,
+// or resolve the environment -- everything else is handed in through Deps.
 package devroutes
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
+	"time"
+
+	"github.com/mdhender/bricolage/internal/domain"
 )
 
 // Prefix is the path prefix every route in this package shares. The route
@@ -54,6 +64,11 @@ type Mux interface {
 }
 
 // Deps are what the handlers need from the server that owns them.
+//
+// Everything here is handed in. This package resolves nothing for itself --
+// not the environment, not the origin, not a database -- because a development
+// affordance that can reach out and get what it needs is a development
+// affordance that can be wired up by accident.
 type Deps struct {
 	// Logger receives one WARN line per request reaching any handler here.
 	Logger *slog.Logger
@@ -62,6 +77,38 @@ type Deps struct {
 	// calls it after flushing its response, and the shutdown it starts waits
 	// for that handler to return.
 	Shutdown func(reason string)
+
+	// DevLogin issues a session for an existing user without a password. A
+	// nil DevLogin leaves the log-me-in route unregistered, which is what a
+	// server with no database does.
+	//
+	// It returns domain.ErrNotFound for an unknown email, and the handler
+	// turns that into a 404: this route does not create accounts.
+	DevLogin func(ctx context.Context, email, peer string) (Login, error)
+
+	// ValidateReturnTo checks the returnTo parameter against the configured
+	// public origin and returns the URL to redirect to. An error is a 400.
+	//
+	// The rule lives in internal/config, with the origin it is checked
+	// against, rather than here: an open redirect in a development-only route
+	// is still an open redirect, and this is the pattern that gets copied into
+	// the route that is not development-only.
+	ValidateReturnTo func(returnTo string) (string, error)
+
+	// SetSessionCookie writes the session cookie for a token, with the
+	// attributes invariant 13 requires. It is handed in so that there is one
+	// cookie-writing path in the process rather than two.
+	SetSessionCookie func(w http.ResponseWriter, token string, expires time.Time)
+}
+
+// Login is what DevLogin returns: the token, when it expires, and enough about
+// the user to render a response.
+type Login struct {
+	Token     string
+	ExpiresAt time.Time
+	UserUID   string
+	Email     string
+	Name      string
 }
 
 // ReasonShutdownRoute is the shutdown reason this package reports, so that the
@@ -82,6 +129,129 @@ func Register(mux Mux, deps Deps) {
 	shutdown := guard(log, "shut-it-down", shutItDown(deps.Shutdown))
 	mux.Handle("GET "+Prefix+"shut-it-down", shutdown)
 	mux.Handle("POST "+Prefix+"shut-it-down", shutdown)
+
+	if deps.DevLogin != nil {
+		mux.Handle("GET "+Prefix+"log-me-in/{email}", guard(log, "log-me-in", logMeIn(log, deps)))
+	}
+}
+
+// logMeIn is GET /__development/log-me-in/{email}?returnTo={url}
+// (DESIGN.md 11).
+//
+// It creates a session for an existing user without a password. It does not
+// create accounts: an unknown email is a 404, which keeps the blast radius to
+// accounts that already exist and matches what an agent actually needs --
+// "cmsdb bootstrap admin", then log in as that admin.
+//
+// The session it issues is an ordinary session with the ordinary expiry. It
+// grants no extra privilege: the user's roles and grants apply exactly as they
+// would after a real login (PLAN.md M2 acceptance 10).
+//
+// The response depends on the request, because three different callers use it:
+// a browser following a link, an agent asking for JSON, and a person with
+// curl.
+//
+//	returnTo present            302 to it, session cookie set
+//	Accept: application/json    200 with the token and the user
+//	otherwise                   200 with the token as plain text
+func logMeIn(log *slog.Logger, deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		email := r.PathValue("email")
+		if email == "" {
+			http.Error(w, "no email in the path", http.StatusBadRequest)
+			return
+		}
+
+		// returnTo is validated before anything is created. An open redirect
+		// is a refusal, not a session that also redirects somewhere bad.
+		var redirect string
+		if raw := r.URL.Query().Get("returnTo"); raw != "" {
+			if deps.ValidateReturnTo == nil {
+				http.Error(w, "returnTo is not configured on this server", http.StatusBadRequest)
+				return
+			}
+			target, err := deps.ValidateReturnTo(raw)
+			if err != nil {
+				log.Warn("development route refused a returnTo",
+					"route", "log-me-in", "returnTo", raw, "error", err)
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			redirect = target
+		}
+
+		peer := peerAddr(r)
+		login, err := deps.DevLogin(r.Context(), email, peer)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				log.Warn("development login refused: no such user",
+					"route", "log-me-in", "email", email, "peer", peer)
+				http.Error(w, fmt.Sprintf("no such user: %s", email), http.StatusNotFound)
+				return
+			}
+			log.Error("development login failed",
+				"route", "log-me-in", "email", email, "peer", peer, "error", err)
+			http.Error(w, "could not log in", http.StatusInternalServerError)
+			return
+		}
+
+		log.Warn("development login issued a session",
+			"route", "log-me-in",
+			"email", login.Email,
+			"user", login.UserUID,
+			"peer", peer,
+			"expires_at", login.ExpiresAt.Format(time.RFC3339),
+		)
+
+		if deps.SetSessionCookie != nil {
+			deps.SetSessionCookie(w, login.Token, login.ExpiresAt)
+		}
+
+		if redirect != "" {
+			http.Redirect(w, r, redirect, http.StatusFound)
+			return
+		}
+
+		if wantsJSON(r) {
+			body, err := json.Marshal(map[string]any{
+				"token":      login.Token,
+				"expires_at": login.ExpiresAt,
+				"user": map[string]any{
+					"uid":   login.UserUID,
+					"email": login.Email,
+					"name":  login.Name,
+				},
+			})
+			if err != nil {
+				http.Error(w, "could not encode the response", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintln(w, login.Token)
+	}
+}
+
+// wantsJSON reports whether the caller asked for JSON.
+//
+// It is a substring test rather than a full Accept negotiation: a browser
+// sends "text/html,application/xhtml+xml,...,*/*", which contains neither
+// "application/json" nor anything this needs to weigh, and an agent sends
+// exactly "application/json". Anything more is machinery for a distinction
+// nothing here makes.
+func wantsJSON(r *http.Request) bool {
+	for _, v := range r.Header.Values("Accept") {
+		if strings.Contains(strings.ToLower(v), "application/json") {
+			return true
+		}
+	}
+	return false
 }
 
 // shutItDown writes its response and flushes it before beginning shutdown, so

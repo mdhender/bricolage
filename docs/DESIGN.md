@@ -153,6 +153,7 @@ internal/
   clock/            Clock interface and implementations
   ids/              external identifier generation
   config/           configuration loading and defaults
+  reqctx/           per-request context values: client address, request id, identity
   migrate/schema/   .sql migration files, embedded via go:embed
 deploy/             reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
 testdata/           fixtures
@@ -161,6 +162,21 @@ testdata/           fixtures
 `workflow`, `authz`, `publish`, `jobs`, `events` sit conceptually beside
 `service`: they hold logic too specific to be `domain` and too reusable to be a
 single service method. They may import `domain` and `store`, not `api` or `web`.
+
+`authz` owns authentication's primitives as well as authorization's rules:
+bcrypt password hashing, session-token minting, and the SHA-256 the sessions
+table is keyed by. They are small, they have no other client, and a package
+named for "who may do what" is where somebody looks for "who is this". Keeping
+them there rather than in `service` means the primitive and its rules cannot be
+quietly reimplemented by a second caller.
+
+`reqctx` is a leaf holding the context keys and accessors for the values
+resolved once per request: the client address (§11, "Trust forwarded headers
+only from the proxy"), the request id, and the authenticated identity. It
+exists so that `api`, `web`, `web/devroutes` and `server` can agree on those
+values without importing one another, and so that the client address is
+resolved in exactly one middleware — a second parse downstream is a second
+policy, and the two disagree in only one direction.
 
 `server` sits above the transports and holds no business logic. It exists
 because two things have nowhere else to live. The first is the route table:
@@ -603,6 +619,16 @@ CREATE TABLE grants (
   created_by    INTEGER REFERENCES users(id)
 ) STRICT;
 ```
+
+The scope columns arrive with the tables they point at. `site_id` and the
+non-key columns are there from the identity migration; `category_id`,
+`category_deep`, `workflow_id`, `collection_id` and `document_id` are added by
+the migration that creates `categories`, `workflows`, `collections` and
+`documents`, each with its `REFERENCES` clause attached — SQLite cannot add a
+foreign key to a column that already exists, and a scope column with no
+referential integrity is the rule column nothing reads. `domain.Scope` carries
+all nine from the first commit and `authz.Resolve` evaluates all nine, so the
+resolver does not change when a column lands.
 
 Privilege scale, kept from Bricolage because it is well chosen:
 
@@ -1134,6 +1160,7 @@ debug tool, and **it is the acceptance-test harness for every milestone.**
 ```
 earl login   --server URL --email E                 prompts for password, stores token
 earl login   --server URL --email E --dev           no password; server must be in development (§11)
+earl logout                                         end the session and forget the token
 earl whoami
 earl doc list        [--state S] [--assignee U|--unassigned] [--overdue] [--site S]
 earl doc show        UID
@@ -1154,6 +1181,7 @@ earl queue           SLUG
 earl job list        [--failed] [--pending]
 earl job retry       ID
 earl admin grant     --role R --privilege P [scope flags...]
+earl admin assign    --user UID --role R
 ```
 
 Every command supports `--json` for machine-readable output; the default is a
@@ -1204,6 +1232,9 @@ GET    /api/v1/jobs
 POST   /api/v1/jobs/{id}/retry
 GET    /api/v1/notifications
 POST   /api/v1/notifications/{id}/read
+
+POST   /api/v1/grants                            write a grant; refuses an escalation (§7.3)
+POST   /api/v1/users/{uid}/roles                 assign a role; the same refusal applies
 
 GET/POST/PATCH  /api/v1/sites, /categories, /output-channels,
                 /element-types, /workflows, /roles, /grants, /users

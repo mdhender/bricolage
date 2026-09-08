@@ -106,15 +106,25 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 and M1 are complete and M2 has not started. `cmsdb` can `init`, `migrate
-status`, `migrate up [--to N]`, `check`, and `vacuum`; `cmsd serve` requires
-`--db DIR`, opens `DIR/cms.db`, and refuses to start on any of the four failures
-in `DESIGN.md` §13.4. The schema is two migrations —
-`internal/migrate/schema/0001_users.sql` and `0002_events.sql` — and nothing
-writes to either table yet. `internal/{migrate,store,ids,clock}` are real;
-`internal/domain` holds only its sentinel errors. The remaining packages under
-`internal/` are a `doc.go` stating the package's responsibility and permitted
-imports — read that doc before adding the first real file to one.
+M0, M1, and M2 are complete and M3 has not started. `cmsdb` can `init`,
+`migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed`, `check`,
+and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`, refuses to
+start on any of the four failures in `DESIGN.md` §13.4, and serves the session,
+identity, and grant routes plus `/healthz`. `earl` can `login` (with `--dev`),
+`whoami`, `logout`, `admin grant`, and `admin assign`.
+
+The schema is three migrations — `0001_users.sql`, `0002_events.sql`, and
+`0003_identity.sql`, which adds `password_hash`, `roles`, `user_roles`,
+`sites`, `grants`, and `sessions`. `grants` carries the scope columns whose
+target table exists; the rest arrive with the migration that creates theirs,
+because SQLite cannot add a foreign key to a column that already exists.
+`internal/domain` and `internal/authz` already carry and resolve the whole
+scope.
+
+`internal/{migrate,store,ids,clock,domain,authz,events,service,api,reqctx}` are
+real. `internal/{workflow,publish,jobs,render,web}` are still a `doc.go`
+stating the package's responsibility and permitted imports — read that doc
+before adding the first real file to one.
 
 `--db` names a **directory** that must already exist; the database inside it is
 always `cms.db`. Only `cmsdb init` creates a database and only `cmsdb` migrates

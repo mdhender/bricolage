@@ -98,6 +98,36 @@ func run(t *testing.T, bin string, env []string, args ...string) (stdout, stderr
 	return out.String(), errb.String(), code
 }
 
+// runStdin is run with something on the command's standard input, which is
+// how a password reaches "cmsdb bootstrap admin" and "earl login". A password
+// is never a flag: arguments are visible in "ps" and land in shell history.
+func runStdin(t *testing.T, bin, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	return runStdinEnv(t, bin, nil, stdin, args...)
+}
+
+func runStdinEnv(t *testing.T, bin string, env []string, stdin string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(bin, args...)
+	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdin = strings.NewReader(stdin)
+	var out, errb strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+
+	err := cmd.Run()
+	code = 0
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("running %s %v: %v", bin, args, err)
+		}
+	}
+	return out.String(), errb.String(), code
+}
+
 // initDB creates a database in a fresh temporary directory and returns the
 // directory, which is what --db names (DESIGN.md 13.1).
 //

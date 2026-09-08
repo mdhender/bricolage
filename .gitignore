@@ -4,6 +4,12 @@
 # build output
 deploy/linux/
 
+# "go build ./cmd/earl" drops a binary here. Run commands with
+# "go run ./cmd/<name>"; build one only when you want one.
+/cmsd
+/cmsdb
+/earl
+
 # local database directory; --db names a directory, the file inside is cms.db
 var/
 

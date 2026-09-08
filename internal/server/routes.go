@@ -3,9 +3,12 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/mdhender/bricolage/internal/api"
 	"github.com/mdhender/bricolage/internal/web/devroutes"
 )
 
@@ -23,6 +26,11 @@ type Route struct {
 // from the pattern rather than from a flag someone has to remember to set.
 func (r Route) IsDevelopment() bool {
 	return strings.Contains(r.Pattern, devroutes.Prefix)
+}
+
+// IsAPI reports whether this route is part of the JSON API.
+func (r Route) IsAPI() bool {
+	return strings.Contains(r.Pattern, api.Prefix)
 }
 
 // builder registers handlers on a mux and records what it registered.
@@ -59,16 +67,75 @@ func (s *Server) buildRoutes() (*http.ServeMux, []Route) {
 
 	b.handle("GET /healthz", "liveness", http.HandlerFunc(healthz))
 
-	if s.env.IsDevelopment() {
-		b.note = "development only"
-		devroutes.Register(b, devroutes.Deps{
-			Logger:   s.log,
-			Shutdown: s.RequestShutdown,
+	// The JSON API is registered only when there is a service to serve it.
+	// "cmsd routes" builds a table without opening a database, and a route
+	// whose handler would dereference a nil service is worse than a route that
+	// is not there -- but the table would then differ from the one "serve"
+	// produces, so routes is told about the service too and the two agree.
+	if s.svc != nil || s.declareAPI {
+		b.note = "json api"
+		api.Register(b, api.Deps{
+			Service:     s.svc,
+			Environment: s.env,
+			Logger:      s.log,
 		})
 		b.note = ""
 	}
 
+	if s.env.IsDevelopment() {
+		b.note = "development only"
+		devroutes.Register(b, s.devDeps())
+		b.note = ""
+	}
+
 	return b.mux, b.routes
+}
+
+// devDeps assembles what the development routes are handed.
+//
+// Everything they can do is in this struct. log-me-in is registered only when
+// there is a service behind it, so a server built without a database -- which
+// is what "cmsd routes" does -- has the shutdown route and nothing else, and
+// the table says so.
+func (s *Server) devDeps() devroutes.Deps {
+	deps := devroutes.Deps{
+		Logger:   s.log,
+		Shutdown: s.RequestShutdown,
+	}
+	if s.svc == nil && !s.declareAPI {
+		return deps
+	}
+
+	// The same cookie-writing path the API uses: a session the development
+	// route issues is an ordinary session, so it gets an ordinary cookie
+	// (invariant 13).
+	deps.ValidateReturnTo = s.origin.ValidateReturnTo
+	deps.SetSessionCookie = api.SetSessionCookie
+
+	if s.svc == nil {
+		// Route-table mode: the pattern is declared so that "cmsd routes"
+		// prints what "serve" would mount, and the handler refuses rather
+		// than dereferencing nothing.
+		deps.DevLogin = func(context.Context, string, string) (devroutes.Login, error) {
+			return devroutes.Login{}, errors.New("no database is open")
+		}
+		return deps
+	}
+
+	deps.DevLogin = func(ctx context.Context, email, peer string) (devroutes.Login, error) {
+		result, err := s.svc.DevLogin(ctx, email, peer)
+		if err != nil {
+			return devroutes.Login{}, err
+		}
+		return devroutes.Login{
+			Token:     result.Token,
+			ExpiresAt: result.Session.ExpiresAt,
+			UserUID:   result.Identity.User.UID,
+			Email:     result.Identity.User.Email,
+			Name:      result.Identity.User.Name,
+		}, nil
+	}
+	return deps
 }
 
 // healthz answers the reverse proxy and anything else asking whether the

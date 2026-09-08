@@ -14,7 +14,15 @@ import (
 
 func newTestServer(t *testing.T, env config.Environment) *Server {
 	t.Helper()
-	s, err := New(Options{Environment: env, Addr: "127.0.0.1:0"})
+	// DeclareRoutesWithoutService is what "cmsd routes" passes: the table
+	// carries every pattern serve would mount, with handlers that refuse
+	// rather than dereference a service that is not there. Without it these
+	// tests would assert against half a server.
+	s, err := New(Options{
+		Environment:                 env,
+		Addr:                        "127.0.0.1:0",
+		DeclareRoutesWithoutService: true,
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

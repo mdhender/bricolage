@@ -249,9 +249,18 @@ table of our own — the pragmas are the bookkeeping.
 **Goal.** A person can be created, can log in, and their effective privilege
 over a scope can be computed.
 
-**Schema.** `roles`, `user_roles`, `grants`, `sessions`, and the credential
-columns on `users`, whose identity columns M1's first migration already created.
+**Schema.** `roles`, `user_roles`, `sites`, `grants`, `sessions`, and the
+credential columns on `users`, whose identity columns M1's first migration
+already created.
 `sessions(id, user_id, token_sha256, created_at, expires_at, last_seen_at)`.
+
+`sites` is here rather than in M3 because `cmsdb seed` creates one and because
+`grants.site_id` points at it. The other four scope columns of `grants` —
+`category_id`/`category_deep`, `workflow_id`, `collection_id`, `document_id` —
+are **not** here: SQLite cannot add a foreign key to a column that already
+exists, so each is added by the migration that creates its target table, with
+the constraint attached. `internal/domain` carries the whole scope and
+`internal/authz` resolves all of it from this milestone (acceptance 6).
 
 **Work.**
 - `internal/domain`: `Privilege` with the ordered scale and `DENY = 255`;
@@ -260,7 +269,9 @@ columns on `users`, whose identity columns M1's first migration already created.
   no I/O. Scope matching including `category_deep` prefix semantics.
 - Anti-escalation check in the grant-writing path (`DESIGN.md` §7.3).
 - Password hashing, token generation, session store.
-- `cmsdb bootstrap admin`, `cmsdb seed` (roles, one site, default workflow).
+- `cmsdb bootstrap admin`, `cmsdb seed` (roles and their grants, one site). The
+  default workflow the seed also owes arrives in M4, with the workflow tables —
+  see M4's work list, which is where it is written down.
 - `cmsd serve` with `POST /api/v1/sessions`, `GET /api/v1/me`, auth middleware.
 - `earl login`, `earl whoami`. `earl` defaults to the public origin
   (`https://htmx-app.localhost:8443` in development), not the Go listener.
@@ -281,7 +292,10 @@ columns on `users`, whose identity columns M1's first migration already created.
    password exactly once; a second run exits non-zero and changes nothing.
 2. A password supplied on a command-line flag is rejected outright.
 3. `earl login` then `earl whoami` prints the bootstrapped admin, over the
-   Caddy proxy rather than direct to the listener.
+   Caddy proxy rather than direct to the listener. The proxy variant is a
+   separate test that skips when the Homebrew Caddy service is not already
+   proxying the development origin, because CI has neither the service nor a
+   `*.localhost` certificate; never start Caddy to make it run.
 4. The session cookie carries `Secure` even though the test server speaks plain
    HTTP. A test asserts the attribute directly. An `r.TLS != nil` guard anywhere
    in the cookie path is a failure, whatever the tests say.

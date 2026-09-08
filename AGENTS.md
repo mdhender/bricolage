@@ -56,6 +56,7 @@ internal/{api,web}      transports
 internal/web/devroutes  the /__development/* handlers; no build tag gates them
 internal/server         composition root: the route table, the one shutdown path
 internal/{clock,ids,config,buildenv}
+internal/reqctx         per-request context values: client address, request id, identity
 internal/migrate/schema .sql migrations, embedded via go:embed
 deploy/                 reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
 testdata/               fixtures
@@ -112,10 +113,20 @@ There is nothing for you to configure. You start `cmsd` and nothing else:
 brew services list | grep caddy    # expect "started" — do not start it yourself
 mkdir -p var                       # you create the directory; no command ever will
 go run ./cmd/cmsdb init --db ./var                 # creates ./var/cms.db
+go run ./cmd/cmsdb seed --db ./var                 # roles and their grants, one site
 go run ./cmd/cmsdb bootstrap admin --db ./var --email admin@example.com --name Admin
 go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 --env development --timeout 60m
 go run ./cmd/earl login --server https://htmx-app.localhost:8443 --dev --email admin@example.com
+go run ./cmd/earl whoami
 ```
+
+`seed` before `bootstrap admin`: the admin role is seeded, and bootstrap
+assigns it. Run them the other way round and bootstrap says so rather than
+silently creating a user with no role.
+
+`bootstrap admin` prints a generated password **once**, or reads one from stdin
+with `--password-stdin`. It never takes a password as a flag — arguments are
+visible in `ps` and land in shell history.
 
 **`--db` names a directory, not a file** (`DESIGN.md` §13.1). The database
 inside it is always `cms.db`. Nothing in this system creates a directory, so

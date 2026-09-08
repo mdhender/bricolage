@@ -15,6 +15,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -22,9 +23,11 @@ import (
 
 	"github.com/mdhender/bricolage"
 	"github.com/mdhender/bricolage/internal/buildenv"
+	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/migrate"
 	"github.com/mdhender/bricolage/internal/server"
+	"github.com/mdhender/bricolage/internal/service"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -49,6 +52,16 @@ type flags struct {
 	env     string
 	addr    string
 	timeout time.Duration
+
+	// publicOrigin is the external origin a browser reaches this system at.
+	// It is configuration and never inference: absolute URLs, the cookie, the
+	// returnTo check, and the CSRF trusted-origin list all come from it, and
+	// the Host header is attacker-controlled (DESIGN.md 11).
+	publicOrigin string
+
+	// trustedProxies are the networks X-Forwarded-* is honoured from
+	// (invariant 14).
+	trustedProxies []string
 
 	// db is the directory holding cms.db. It is on serve and not on routes,
 	// because the route table does not depend on it and a flag that is parsed
@@ -89,7 +102,7 @@ func newServeCmd(f *flags) *cobra.Command {
 		Short: "Serve until a signal, a timeout, or a shutdown request",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			srv, log, err := build(f)
+			settings, err := resolve(f)
 			if err != nil {
 				return err
 			}
@@ -105,11 +118,27 @@ func newServeCmd(f *flags) *cobra.Command {
 				return err
 			}
 			defer db.Close()
-			log.Info("database opened",
+			settings.log.Info("database opened",
 				"path", db.Path(),
 				"user_version", db.SchemaVersion(),
 				"migrations", migrate.Count(),
 			)
+
+			// The one place outside internal/clock that reads the wall clock
+			// is main, and this is it: the real clock is constructed here and
+			// handed down (invariant 3).
+			svc, err := service.New(db, service.Options{
+				Clock:  clock.Real{},
+				Logger: settings.log,
+			})
+			if err != nil {
+				return err
+			}
+
+			srv, err := settings.server(svc)
+			if err != nil {
+				return err
+			}
 
 			// SIGTERM and SIGINT reach the same shutdown path as --timeout and
 			// the development route (invariant 17).
@@ -138,7 +167,15 @@ func newRoutesCmd(f *flags) *cobra.Command {
 			"environment is exactly \"development\".",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			srv, _, err := build(f)
+			settings, err := resolve(f)
+			if err != nil {
+				return err
+			}
+			// No database, but the table still declares what "serve" would
+			// mount: the question this command answers is "are the
+			// /__development/* routes registered", and a table missing half
+			// the server answers it wrongly.
+			srv, err := settings.server(nil)
 			if err != nil {
 				return err
 			}
@@ -172,11 +209,26 @@ func addServeFlags(cmd *cobra.Command, f *flags) {
 		"address to listen on; loopback, and never TLS")
 	cmd.Flags().DurationVar(&f.timeout, "timeout", config.DefaultTimeout,
 		"shut down gracefully after this duration; 0 means never")
+	cmd.Flags().StringVar(&f.publicOrigin, "public-origin", config.DefaultPublicOrigin,
+		"the external origin browsers reach this server at, through the proxy")
+	cmd.Flags().StringSliceVar(&f.trustedProxies, "trusted-proxy", config.DefaultTrustedProxies,
+		"CIDR blocks X-Forwarded-* headers are honoured from")
 }
 
-// build resolves the flags into a Server and the logger that goes with it. It
-// is shared by serve and routes so that neither can drift from the other.
-func build(f *flags) (*server.Server, *slog.Logger, error) {
+// settings are the flags after resolution: everything a Server needs, with
+// nothing left to decide.
+type settings struct {
+	resolution config.Resolution
+	log        *slog.Logger
+	origin     config.PublicOrigin
+	trusted    []*net.IPNet
+	addr       string
+	timeout    time.Duration
+}
+
+// resolve turns the flags into settings. It is shared by serve and routes so
+// that the table routes prints is the table serve would build.
+func resolve(f *flags) (*settings, error) {
 	res := config.Resolve(config.Inputs{
 		Flag: f.env,
 		Env:  config.FromEnv(),
@@ -191,16 +243,38 @@ func build(f *flags) (*server.Server, *slog.Logger, error) {
 			"source", string(res.Source), "raw", res.Raw)
 	}
 
-	srv, err := server.New(server.Options{
-		Environment: res.Environment,
-		Addr:        f.addr,
-		Timeout:     f.timeout,
-		Logger:      log,
-		Banner:      os.Stderr,
-		Resolution:  &res,
-	})
+	origin, err := config.ParsePublicOrigin(f.publicOrigin)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return srv, log, nil
+	trusted, err := config.ParseTrustedProxies(f.trustedProxies)
+	if err != nil {
+		return nil, err
+	}
+
+	return &settings{
+		resolution: res,
+		log:        log,
+		origin:     origin,
+		trusted:    trusted,
+		addr:       f.addr,
+		timeout:    f.timeout,
+	}, nil
+}
+
+// server builds the Server. A nil service is the "cmsd routes" case: the table
+// declares what serve would mount, with handlers that refuse.
+func (s *settings) server(svc *service.Service) (*server.Server, error) {
+	return server.New(server.Options{
+		Environment:                 s.resolution.Environment,
+		Addr:                        s.addr,
+		Timeout:                     s.timeout,
+		Logger:                      s.log,
+		Banner:                      os.Stderr,
+		Resolution:                  &s.resolution,
+		Service:                     svc,
+		DeclareRoutesWithoutService: svc == nil,
+		Origin:                      s.origin,
+		TrustedProxies:              s.trusted,
+	})
 }

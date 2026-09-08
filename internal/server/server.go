@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/mdhender/bricolage/internal/config"
+	"github.com/mdhender/bricolage/internal/service"
 )
 
 // The reasons a shutdown can begin. There are three ways in and one way
@@ -53,6 +54,30 @@ type Options struct {
 	// Resolution, when set, lets the banner say not just what the environment
 	// is but where it came from.
 	Resolution *config.Resolution
+
+	// Service is the use-case layer. A nil Service builds the route table
+	// without the handlers that would need it, which is what "cmsd routes"
+	// does: it prints the table a configuration produces without opening a
+	// database.
+	Service *service.Service
+
+	// DeclareRoutesWithoutService makes the table include the routes a
+	// Service would carry, with handlers that refuse.
+	//
+	// It exists for "cmsd routes", whose whole job is to print what "serve"
+	// would mount (DESIGN.md 11). A table that omitted the API because no
+	// database was open would answer the question wrongly, and the question is
+	// "are the development routes registered".
+	DeclareRoutesWithoutService bool
+
+	// Origin is the public origin: what cookies are written for, what
+	// returnTo is validated against, and what the CSRF protection trusts
+	// (DESIGN.md 11). Zero means config.DefaultPublicOrigin.
+	Origin config.PublicOrigin
+
+	// TrustedProxies are the networks X-Forwarded-* headers are honoured
+	// from (invariant 14). Nil means config.DefaultTrustedProxies.
+	TrustedProxies []*net.IPNet
 }
 
 // Server is cmsd's HTTP server: one route table, one shutdown path.
@@ -64,6 +89,16 @@ type Server struct {
 	log          *slog.Logger
 	banner       io.Writer
 	resolution   *config.Resolution
+
+	svc        *service.Service
+	declareAPI bool
+	origin     config.PublicOrigin
+	trusted    []*net.IPNet
+
+	// handler is the mux with the middleware around it: the request id, the
+	// resolved client address, and the CSRF protection. It is what Serve
+	// serves and what a test drives.
+	handler http.Handler
 
 	mux    *http.ServeMux
 	routes []Route
@@ -97,6 +132,21 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("timeout %s: must not be negative", opts.Timeout)
 	}
 
+	origin := opts.Origin
+	if origin.URL == nil {
+		var err error
+		if origin, err = config.ParsePublicOrigin(config.DefaultPublicOrigin); err != nil {
+			return nil, err
+		}
+	}
+	trusted := opts.TrustedProxies
+	if trusted == nil {
+		var err error
+		if trusted, err = config.ParseTrustedProxies(config.DefaultTrustedProxies); err != nil {
+			return nil, err
+		}
+	}
+
 	s := &Server{
 		env:          opts.Environment,
 		addr:         addr,
@@ -105,6 +155,10 @@ func New(opts Options) (*Server, error) {
 		log:          opts.Logger,
 		banner:       opts.Banner,
 		resolution:   opts.Resolution,
+		svc:          opts.Service,
+		declareAPI:   opts.DeclareRoutesWithoutService,
+		origin:       origin,
+		trusted:      trusted,
 		shutdown:     make(chan string, 1),
 		afterFunc:    time.AfterFunc,
 	}
@@ -116,6 +170,18 @@ func New(opts Options) (*Server, error) {
 	}
 
 	s.mux, s.routes = s.buildRoutes()
+
+	// The middleware order is the order the values become available. The
+	// request id first, so that every log line below it can carry one; the
+	// client address next, so that a handler and the CSRF refusal see the same
+	// answer; the CSRF protection last, closest to the mux, because it is the
+	// only one that may refuse.
+	protected, err := withCSRF(s.origin, s.mux)
+	if err != nil {
+		return nil, err
+	}
+	s.handler = withRequestID(withClientAddr(s.trusted, protected))
+
 	return s, nil
 }
 
@@ -135,9 +201,19 @@ func (s *Server) Resolution() string {
 // Routes returns the table, exactly as registered.
 func (s *Server) Routes() []Route { return s.routes }
 
-// Handler returns the mux, for tests and for anything that wants to serve it
-// some other way.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns what Serve serves: the mux with the middleware around it.
+//
+// A test drives this rather than the bare mux, so that what a test exercises
+// is what a client reaches. Reaching past the middleware is how a CSRF
+// exemption or a forged X-Forwarded-For gets tested into existence.
+func (s *Server) Handler() http.Handler { return s.handler }
+
+// Mux returns the bare route table, without the middleware. It is here for the
+// tests that are about registration rather than about a request.
+func (s *Server) Mux() http.Handler { return s.mux }
+
+// Origin returns the configured public origin.
+func (s *Server) Origin() config.PublicOrigin { return s.origin }
 
 // RequestShutdown begins a graceful shutdown, naming the reason.
 //
@@ -168,7 +244,7 @@ func (s *Server) Run(ctx context.Context) error {
 // same select and leave through the same drain. Do not write a second one.
 func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{
-		Handler:           s.mux,
+		Handler:           s.handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
