@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_version="1.20.14"
+go_archive="go${go_version}.linux-amd64.tar.gz"
+go_sha256="ff445e48af27f93f66bd949ae060d97991c83e11289009d311f25426258f9c44"
+go_root="$HOME/.local/share/go/$go_version"
+
+started_at=$SECONDS
+echo "==> Installing Go $go_version"
+if [[ ! -x "$go_root/bin/go" ]] || [[ "$($go_root/bin/go version)" != "go version go${go_version} linux/amd64" ]]; then
+  archive="$(mktemp)"
+  extract_dir="$(mktemp -d)"
+  trap 'rm -f "$archive"; rm -rf "$extract_dir"' EXIT
+
+  curl --fail --location --silent --show-error \
+    "https://go.dev/dl/$go_archive" \
+    --output "$archive"
+  echo "$go_sha256  $archive" | sha256sum --check --status
+  tar -xzf "$archive" -C "$extract_dir"
+  mkdir -p "$(dirname "$go_root")"
+  rm -rf "$go_root"
+  mv "$extract_dir/go" "$go_root"
+fi
+
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$go_root/bin/go" "$HOME/.local/bin/go"
+ln -sfn "$go_root/bin/gofmt" "$HOME/.local/bin/gofmt"
+echo "    Go ready in $((SECONDS - started_at))s"
+
+started_at=$SECONDS
+echo "==> Downloading Go modules"
+cd "$repo_root"
+"$go_root/bin/go" mod download
+echo "    Go modules ready in $((SECONDS - started_at))s"
