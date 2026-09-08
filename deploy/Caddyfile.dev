@@ -1,0 +1,36 @@
+# Development reverse proxy.
+#
+# Caddy terminates TLS so that development matches production: cmsd speaks
+# plain HTTP on loopback and never handles certificates. Caddy issues a
+# certificate for *.localhost from its own internal CA, so there is nothing to
+# install and nothing to renew.
+#
+#   caddy run --config deploy/Caddyfile.dev
+#   go build -tags dev -o bin/cmsd ./cmd/cmsd
+#   bin/cmsd serve --db ./dev.db --addr 127.0.0.1:18443 \
+#       --env development --timeout 60m
+#
+# Then open https://htmx-app.localhost:8443/
+#
+# The first run prints a prompt to trust Caddy's local CA. Accept it, or run
+# `caddy trust` once. Browsers resolve *.localhost to loopback without any
+# /etc/hosts entry.
+
+{
+	# Keep Caddy's own admin API off a predictable port during development.
+	admin off
+}
+
+htmx-app.localhost:8443 {
+	# reverse_proxy sets X-Forwarded-For, X-Forwarded-Proto and
+	# X-Forwarded-Host, and passes Origin and Sec-Fetch-* through unmodified.
+	# cmsd trusts these only from 127.0.0.1 — see server.trusted_proxies.
+	reverse_proxy 127.0.0.1:18443
+
+	encode gzip
+
+	log {
+		output stderr
+		format console
+	}
+}
