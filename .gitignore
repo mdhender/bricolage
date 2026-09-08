@@ -1,2 +1,5 @@
 .idea/
 .amp/portals/
+
+# build output
+deploy/linux/

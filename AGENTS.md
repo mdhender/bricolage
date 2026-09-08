@@ -53,9 +53,9 @@ internal/migrate        embedded migrations
 internal/service        use cases; owns transactions
 internal/{workflow,authz,publish,jobs,events,render}   subsystem logic
 internal/{api,web}      transports
-internal/{clock,ids,config}
+internal/{clock,ids,config,buildenv}
 schema/                 .sql migrations, embedded
-deploy/                 reverse-proxy config; Caddyfile.dev
+deploy/                 reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
 testdata/               fixtures
 ```
 
@@ -84,12 +84,45 @@ is the CSRF defence for the HTMX UI. Do not lower the floor.
 terminates it, in development as in production, so there is one serving model
 rather than two.
 
+### Caddy is a service. Do not touch it.
+
+**Caddy runs as a machine-wide Homebrew service and you must never run it
+yourself.** Do not run `caddy run`, `caddy start`, `caddy reload`, or
+`caddy trust`. In particular, **never run
+`caddy run --config deploy/Caddyfile.dev`** — that file is an **EXAMPLE ONLY**,
+kept as documentation of the proxy shape, and is not the configuration this
+machine serves.
+
+The reason is certificates. The service runs with
+`HOME=/opt/homebrew/var/lib`, so its internal CA lives in
+`/opt/homebrew/var/lib/caddy/pki/`. Running `caddy` as your own user account
+uses `~/Library/Application Support/Caddy/pki/` instead, which mints a *second*
+CA root carrying the same subject name and trusts it. Two same-subject anchors
+make certificate chain building non-deterministic: HTTPS to `*.localhost:8443`
+fails at random, in Chrome first, and clearing it needs `sudo` keychain
+surgery. We have already lost an afternoon to exactly this.
+
+The service reads `/opt/homebrew/etc/Caddyfile`, which already terminates TLS
+for `https://htmx-app.localhost:8443` and proxies it to `127.0.0.1:18443`.
+There is nothing for you to configure. You start `cmsd` and nothing else:
+
 ```sh
-caddy run --config deploy/Caddyfile.dev     # https://htmx-app.localhost:8443
-go build -tags dev -o bin/cmsd ./cmd/cmsd   # dev routes need the tag
-bin/cmsd serve --db ./dev.db --addr 127.0.0.1:18443 --env development --timeout 60m
-earl login --server https://htmx-app.localhost:8443 --dev --email admin@example.com
+brew services list | grep caddy    # expect "started" — do not start it yourself
+go run ./cmd/cmsd serve --db ./dev.db --addr 127.0.0.1:18443 --env development --timeout 60m
+go run ./cmd/earl login --server https://htmx-app.localhost:8443 --dev --email admin@example.com
 ```
+
+**`go run ./cmd/...` is how we run commands locally.** There is no build step
+and no tag to remember: the one build tag we have, `production`, is for release
+binaries only and never for local work. Build a binary when you want one; never
+make it a prerequisite for running the thing.
+
+If Caddy is not started, ask a human to start it (`brew services start caddy`).
+Do not start it yourself, and do not work around it by having `cmsd` serve TLS.
+
+When diagnosing local TLS, check the chain actually served on the wire and test
+with `/usr/bin/curl`. Homebrew's `openssl` and `curl` carry their own CA
+bundles and will disagree with the macOS keychain.
 
 Point clients at the public origin, not at `127.0.0.1:18443`. Talking to the
 listener directly bypasses the proxy and exercises a path that does not exist in
@@ -110,15 +143,15 @@ Three affordances exist so you can drive the system unattended. Full rules in
 session fails in a way that looks like a code bug. A generous timeout costs
 nothing; forgetting one costs somebody an hour.
 
-The first two require **both** a binary built with `-tags dev` **and**
-`--env development`. The environment defaults to `production`, so neither the
-build nor the configuration alone is enough. Anything other than the exact
-string `development` — unset, empty, `dev`, `Development` — is `production`.
+The first two require `--env development` (or `CMS_ENV=development`) and
+nothing else — **no build tag gates them.** The routes are simply not
+registered in any other environment. The environment defaults to `production`, and
+anything other than the exact string `development` — unset, empty, `dev`,
+`Development` — is `production`.
 
-A default build returns 404 for both, by design. If you get a 404, you either
-built without the tag or did not set the environment, and that is the guard
-working rather than a bug to route around. Fix the build or the flag; never
-weaken the guard.
+If you get a 404, you did not set the environment. That is the guard working
+rather than a bug to route around: fix the flag, and never weaken the guard or
+register the routes unconditionally "just for a minute".
 
 `log-me-in` logs in as an **existing** user; it does not create accounts. Run
 `cmsdb bootstrap admin` first.
@@ -133,11 +166,34 @@ go vet ./...
 gofmt -l .
 ```
 
+- Run commands with `go run ./cmd/<name>`. Do not make a `go build` step a
+  prerequisite for running anything, and do not add a build tag — `production`
+  is the only one, it is described below, and it gates no code.
 - Format changed Go files with `gofmt`.
 - Add or update focused tests when changing behaviour.
 - Do not edit `go.sum` by hand; use Go module commands.
 - Verify library APIs with `go doc` against the installed toolchain rather than
   assuming.
+
+### Building for the server
+
+You will rarely need this; it is here so that nobody invents a different recipe.
+Release binaries are cross-compiled with `-tags production` and rsynced:
+
+```sh
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+    go build -tags production -trimpath -o deploy/linux/amd64/cmsd ./cmd/cmsd
+rsync -av --chmod=F755 deploy/linux/amd64/ deploy@SERVER:/opt/cms/bin/
+```
+
+The tag adds one thing — `buildenv.Verify()`, which panics unless `CMS_ENV` is
+exported as exactly `production`. Binaries built without it panic if `CMS_ENV`
+*is* `production`. It gates no routes and no features. Full rules in
+`deploy/README.md` and `docs/DESIGN.md` §14.
+
+**Never deploy anything yourself, and never build a production binary as a side
+effect of some other task.** If a change needs shipping, say so and let a human
+run it.
 
 ## Invariants
 
@@ -180,15 +236,26 @@ These are not style preferences. Violating one is a bug even if the tests pass.
     address once, in middleware, and read it from the context.
 15. **`cmsd` binds loopback and never terminates TLS.** No `:8080`, no
     `0.0.0.0`, no certificate handling, no HSTS header of its own.
-16. **`/__development/*` routes require `//go:build dev` *and*
-    `environment == "development"`.** The environment defaults to `production`
-    and is never inferred from a hostname, a listen address, or a TTY. Never
-    register these routes from ordinary code, never add a second switch that
-    turns them on, and never relax the guard to make a test pass. A default
-    build must return 404 for every one of them, and CI asserts it. Either
-    route is a complete authentication bypass if it reaches production.
+16. **`/__development/*` routes are registered only when
+    `environment == "development"`.** They are left out of the mux entirely, not
+    matched and then refused, so the route table always tells the truth. No
+    build tag is involved — the resolved environment is the whole gate, which is
+    why nothing may erode it. The `production` tag (invariant 18) is a placement
+    check, not a feature switch; never use it to hide a route. The environment
+    defaults to `production` and is never inferred from a hostname, a listen
+    address, or a TTY. Never register these routes
+    from ordinary code, never add a second switch that turns them on, and never
+    relax the guard to make a test pass. With the default environment every one
+    of them must 404, and CI asserts it. Either route is a complete
+    authentication bypass if it reaches production.
 17. **Graceful shutdown is one code path**, reached by `SIGTERM`, `--timeout`,
     and the dev shutdown route alike. Do not write a second one.
+18. **`buildenv.Verify()` is called from `main`, never from `init()`.** `main`
+    decides when the check runs, because it may want to handle `version` or
+    `--help` first. Under `-tags production` it panics unless `CMS_ENV` is
+    exported as exactly `production`; without the tag it panics if `CMS_ENV`
+    *is* `production`. It reads the raw environment variable, not the resolved
+    `environment`, and it must never grow a second responsibility.
 
 ## Code conventions
 

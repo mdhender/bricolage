@@ -146,11 +146,12 @@ internal/
   api/              JSON REST handlers, request/response types
   web/              HTMX handlers and html/template files
   web/devroutes/    build-tagged `/__development/*` handlers; stub when untagged
+  buildenv/         the build/environment interlock (§14); the only tagged files
   clock/            Clock interface and implementations
   ids/              external identifier generation
   config/           configuration loading and defaults
 schema/             .sql migration files, embedded via go:embed
-deploy/             reverse-proxy configuration; Caddyfile.dev
+deploy/             reverse-proxy notes; Caddyfile.dev is an EXAMPLE ONLY
 testdata/           fixtures
 ```
 
@@ -864,13 +865,14 @@ message.
 cmsd serve --db PATH [--addr 127.0.0.1:18443] [--workers N] [--config FILE]
            [--env development|production] [--timeout DURATION]
 cmsd routes                       print the route table and exit
-cmsd version                      includes whether dev routes are compiled in
+cmsd version                      version, commit, Go version
 ```
 
 `--env` defaults to `production` (§14). `--timeout` shuts down gracefully after
 the given duration; `0`, the default, means never. The `/__development/*` routes
-require `--env development` **and** a binary built with `-tags dev`; see
-"Development affordances" below.
+require `--env development` and nothing else; see "Development affordances"
+below. `cmsd routes` prints the table the running configuration actually
+produces, so it is the way to ask whether they are registered.
 
 Serves three things from one process:
 
@@ -893,9 +895,11 @@ model, not two.
 | Development | `https://htmx-app.localhost:8443/` | `127.0.0.1:18443` |
 | Production | the site's real origin | loopback, port from config |
 
-`deploy/Caddyfile.dev` in this repository is the development proxy. Caddy
-issues a local certificate for `*.localhost` automatically, so there is nothing
-to install.
+The development proxy is the machine-wide Homebrew Caddy service, which reads
+`/opt/homebrew/etc/Caddyfile`. It issues a local certificate for `*.localhost`
+from its own internal CA automatically, so there is nothing to install. Never
+run Caddy directly; `deploy/Caddyfile.dev` in this repository documents the
+proxy shape and is an example only. See `deploy/README.md`.
 
 `--addr` **defaults to a loopback address, never `:8080` or `0.0.0.0`.** Binding
 a TLS-less server to a public interface is the kind of mistake that survives to
@@ -955,55 +959,43 @@ bypass if it reaches production.
 
 #### The guard stack
 
-Four independent things must all go wrong before these routes are reachable by
-someone who should not have them.
+**No build tag gates these routes.** An earlier draft of this design gated them
+on `-tags dev` as well as the environment. That is gone, deliberately. Such a
+tag means every local invocation has to go through
+`go build -tags dev -o bin/cmsd` first, which breaks `go run ./cmd/cmsd` — and
+`go run ./cmd/...` is how we run commands locally. A guard that makes the normal
+workflow impossible gets worked around, and a worked-around guard protects
+nothing.
 
-**1. Build tag.** The code is physically absent from a default build.
+The `production` tag described in §14 is not a counter-example and must not
+become one: it asserts where a binary is running and gates no code.
 
-```go
-// internal/web/devroutes/routes.go
-//go:build dev
+So the environment is the only switch, and we accept the footgun that follows:
+**anyone who exports `CMS_ENV=development` on a production server exposes a
+complete authentication bypass.** That is a real risk and we are taking it
+knowingly, in exchange for a development loop that does not fight us. What
+remains is three layers, and the last two exist precisely because the first one
+can be misconfigured.
 
-package devroutes
-
-const CompiledIn = true
-
-func Register(mux *http.ServeMux, d Deps) { /* the real routes */ }
-```
-
-```go
-// internal/web/devroutes/stub.go
-//go:build !dev
-
-package devroutes
-
-const CompiledIn = false
-
-func Register(mux *http.ServeMux, d Deps) {}
-```
-
-`go build ./cmd/cmsd` produces a binary in which these handlers do not exist.
-`go build -tags dev ./cmd/cmsd` produces one in which they do. There is no
-runtime path from the first to the second.
-
-**2. The environment is `development`.** Even in a `dev` build, the routes
-register only when the running environment is exactly `development` (§14). The
-default is `production`, so this must be opted into explicitly and a production
-run script will not have done so. Shipping a `dev`-tagged binary is therefore
-not by itself enough to expose them.
+**1. The environment is `development`.** The routes are registered *only* when
+the resolved environment is exactly `development` (§14). This is not a
+middleware that returns 404 — the handlers are never added to the mux, so
+`cmsd routes` shows the truth and there is no matched-then-rejected path to get
+wrong. The default is `production`, and anything other than the exact string
+`development` — unset, empty, `dev`, `Development` — is `production`.
 
 There is deliberately **no separate `--dev` flag**. Two switches meaning almost
 the same thing is how you end up with both of them set in production by
 somebody trying to make an error go away. The environment is the switch.
 
-**3. Loopback peer.** Each handler refuses any request whose *peer* address —
+**2. Loopback peer.** Each handler refuses any request whose *peer* address —
 the real TCP peer, never `X-Forwarded-For` — is not loopback. Behind the proxy
 the peer is always loopback, so this does not help there; it exists to stop the
 routes answering a direct connection from another machine.
 
-**4. It is loud.** `cmsd serve` prints its environment on every start, in every
+**3. It is loud.** `cmsd serve` prints its environment on every start, in every
 environment, so `environment=production` is greppable in a production log. When
-the dev routes are actually live it also prints:
+the dev routes are live it also prints:
 
 ```
 *** ENVIRONMENT=development: /__development/* routes are enabled.
@@ -1013,20 +1005,19 @@ the dev routes are actually live it also prints:
 Every request that reaches a `/__development/*` handler logs at `WARN` with the
 path, the email where relevant, and the resolved peer.
 
-`cmsd version` reports `dev-routes: compiled-in` or `absent`, so an incident
-responder can tell what is running without reading the build command.
+Because the environment is now the whole gate, that banner is the incident
+signal. It is not decoration: an operator who greps for `environment=` in a
+production log and finds `development` has found the problem.
 
 #### The truth table
 
-| Build | `environment` | `/__development/*` |
-|---|---|---|
-| default | `production` | 404 |
-| default | `development` | 404 — code is not in the binary |
-| `-tags dev` | `production` | 404 — not registered |
-| `-tags dev` | `development` | **live** |
+| `environment` | `/__development/*` |
+|---|---|
+| `production` (the default) | 404 — never registered |
+| unset, empty, `dev`, `Development` | 404 — none of these is `development` (§14) |
+| `development` | **live** |
 
-Only the last row exposes them, and reaching it takes a deliberate build *and* a
-deliberate configuration.
+One deliberate configuration exposes them. That is the trade described above.
 
 #### `GET /__development/log-me-in/{email}?returnTo={url}`
 
@@ -1082,10 +1073,18 @@ stop a server that its own operator configured to stop.
 
 #### The rule
 
-**Release artifacts are built without `-tags dev`, and CI proves it.** A test in
-the default build asserts that `/__development/log-me-in/anyone@example.com` and
-`/__development/shut-it-down` both return `404`. If that test ever fails, the
-build is not shippable.
+**A default-environment server exposes none of these routes, and CI proves it.**
+A test starts the server with no `--env` and no `CMS_ENV` and asserts that
+`/__development/log-me-in/anyone@example.com` and
+`/__development/shut-it-down` both return `404`; a companion test asserts they
+are live under `--env development`, so the first test cannot pass merely
+because the feature broke. If either fails, the build is not shippable.
+
+Deployment configuration is where the remaining risk lives. Release binaries
+are built `-tags production` and require `CMS_ENV=production` to be exported
+(§14, "The build/environment interlock"), which makes the correct value the one
+the server cannot start without. Set it in the unit file, never in an
+interactive shell profile, and never copy a development `.env` to a server.
 
 ### `earl` — the API client
 
@@ -1233,11 +1232,19 @@ unset or misspelled value never accidentally unlocks anything. Never infer the
 environment from a hostname, a listen address, or whether a terminal is
 attached.
 
+This setting carries more weight than it looks like it does. Since there is no
+build tag on the `/__development/*` routes (§11), it is the *only* thing
+standing between a deployment and an authentication bypass. Treat every change
+to how it resolves as a security change. The build/environment interlock below
+narrows the window — a release binary refuses to start unless `CMS_ENV` is
+exported as `production` — but it does not close it: nothing stops an operator
+from exporting `development` and running a binary built without the tag.
+
 It governs:
 
 | | `development` | `production` |
 |---|---|---|
-| `/__development/*` routes | live, if built `-tags dev` (§11) | never |
+| `/__development/*` routes | registered (§11) | never registered |
 | Log format | console, human-readable | JSON |
 | Templates | re-read from disk per request | parsed once at startup |
 | Error responses | include the underlying detail | generic, with a request id |
@@ -1249,6 +1256,72 @@ anything that is not a developer's laptop should behave like production.
 
 `cmsd serve` logs its environment on every start, in both environments, so the
 value is greppable in a log rather than inferred from a run script.
+
+**The build/environment interlock.** One build tag exists, `production`, and it
+does exactly one thing: it asserts that the binary is running on the kind of
+machine it was built for. Release binaries are built with it; everything else
+is built without it.
+
+```go
+// internal/buildenv/production.go
+//go:build production
+
+package buildenv
+
+// Verify panics unless CMS_ENV is exported as exactly "production".
+func Verify() {
+	if v := os.Getenv("CMS_ENV"); v != "production" {
+		panic(fmt.Sprintf(
+			"buildenv: built with -tags production, which requires CMS_ENV=production; got %q", v))
+	}
+}
+```
+
+```go
+// internal/buildenv/development.go
+//go:build !production
+
+package buildenv
+
+// Verify panics if CMS_ENV is exported as "production". Any other value,
+// including unset, is fine.
+func Verify() {
+	if v := os.Getenv("CMS_ENV"); v == "production" {
+		panic("buildenv: built without -tags production and must not run with CMS_ENV=production")
+	}
+}
+```
+
+Each command's `main` **calls `buildenv.Verify()` explicitly**. It is not an
+`init()`, deliberately: `init()` fires before `main` gets to do anything, and
+`main` may want to handle `version` or `--help`, or run its own checks, before
+this one. Making it an ordinary call leaves that ordering to `main`, which is
+where it belongs. Call it before the process does any real work.
+
+Three things about this that are easy to get wrong:
+
+- **It reads the exported `CMS_ENV` only** — not the resolved `environment`
+  from §14's precedence chain. That is the point. This guard answers "is this
+  binary on the machine it was built for", and it answers it before flags, the
+  config file, or defaults have been consulted. A development binary run with
+  `--env production` still resolves to `production` and still refuses to
+  register the dev routes; the interlock simply does not have an opinion about
+  it.
+- **It never gates a route or a feature.** The `/__development/*` routes are
+  gated on the resolved environment and nothing else (§11). Do not reach for
+  this tag to hide code — that is the design we removed, and it comes back with
+  the same broken `go run` workflow it had the first time.
+- **The two guards compose.** A release binary demands
+  `CMS_ENV=production`, which resolves the environment to `production`, which
+  means the dev routes are never registered. The interlock does not replace the
+  runtime gate; it makes the misconfiguration that would defeat the runtime
+  gate fail loudly at startup instead of quietly at request time.
+
+The asymmetry is intentional. The release binary requires the value to be set
+explicitly, because a server should say what it is. The ordinary binary only
+rejects the one value it must never see, because requiring developers to export
+anything to run `go run ./cmd/cmsd` is how you end up with a shell profile that
+exports it everywhere.
 
 **Time.** `internal/clock` defines `type Clock interface { Now() time.Time }`.
 Every component that needs time takes one. `time.Now()` appears in `main` and in

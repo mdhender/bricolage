@@ -77,20 +77,26 @@ present and doing nothing but printing their version.
 - `cmsd serve --timeout DURATION` — shut down gracefully after the duration,
   exit 0, log one line naming the configured value. Default `0` = never.
   Ungated: this ships in production builds.
-- `internal/web/devroutes` with the `//go:build dev` / `//go:build !dev` pair
-  from `DESIGN.md` §11. In M0 the tagged build registers only
-  `GET|POST /__development/shut-it-down`; the untagged build registers nothing
-  and exports `CompiledIn = false`.
+- `internal/web/devroutes`, exposing a single `Register(mux, deps)` that the
+  route builder calls **only** when the resolved environment is `development`.
+  No build tag gates them — see `DESIGN.md` §11. In M0 it registers only
+  `GET|POST /__development/shut-it-down`.
 - `internal/config`: the `environment` setting (`development` | `production`,
   default **production**), resolved from `--env`, `$CMS_ENV`, file, default in
   that order. See `DESIGN.md` §14.
 - The loopback-peer check; the startup banner printing the environment in both
   environments and the loud warning only in `development`; `WARN` logging on
-  every `/__development/*` request; `cmsd version` reporting
-  `dev-routes: compiled-in|absent`.
+  every `/__development/*` request.
+- `internal/buildenv`: the `//go:build production` / `//go:build !production`
+  pair from `DESIGN.md` §14, exporting one `Verify()`. Each `main` calls it
+  explicitly — **not** from `init()`, so `main` keeps control of when it runs.
 - Add a `Makefile` (or `Taskfile`) with `build`, `test`, `lint`, `check`, a
-  `dev` target that runs Caddy and a `-tags dev` `cmsd` together, and a
-  `release` target that builds without tags.
+  `dev` target that runs `go run ./cmd/cmsd serve --env development` (the `dev`
+  target must **not** start Caddy — that is a Homebrew service), and a
+  `release` target that cross-compiles all three commands with
+  `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags production -trimpath`
+  into `deploy/linux/amd64/`. Only `release` passes a tag; `go run ./cmd/...`
+  must work for every command without one.
 - Add CI running the full gate on push, including the no-dev-routes assertion.
 
 **Acceptance.**
@@ -99,31 +105,41 @@ present and doing nothing but printing their version.
    and exit 0.
 3. `go list ./internal/domain` shows no repository-internal imports.
 4. `grep -r "pkg/way" .` returns nothing outside git history.
-5. `caddy run --config deploy/Caddyfile.dev` plus `cmsd serve` yields a 200 from
-   `https://htmx-app.localhost:8443/healthz` with a valid certificate. Document
-   the one-time `caddy trust` step in `deploy/README.md` if the toolchain needs
-   it.
+5. With the Homebrew Caddy service running, `cmsd serve` yields a 200 from
+   `https://htmx-app.localhost:8443/healthz` with a valid certificate. Never
+   run Caddy directly, and never load `deploy/Caddyfile.dev` — it is an example
+   only. See `deploy/README.md`.
 6. `cmsd serve` with no `--addr` binds loopback. A test asserts the default is
    not `0.0.0.0` or a bare `:port`.
 7. `cmsd serve --timeout 2s` exits 0 within a small margin of two seconds,
    having drained in-flight requests. Test with a fake clock where possible and
    a real short duration in the end-to-end test.
-8. **In a default build**, `/__development/shut-it-down` returns 404. This test
-   runs untagged in CI and gates release.
-9. In a `-tags dev` build with the default environment, the same route returns
-   404. The whole truth table in `DESIGN.md` §11 gets one test each: only
-   `-tags dev` plus `--env development` is live.
-10. With `-tags dev --env development`,
+8. **With no `--env` and no `CMS_ENV`**, `/__development/shut-it-down` returns
+   404. This test gates release.
+9. `cmsd routes` with the default environment does not list any
+   `/__development/*` pattern, and lists them under `--env development`. The
+   routes are absent from the mux, not registered and refused.
+10. With `--env development`,
    `curl https://htmx-app.localhost:8443/__development/shut-it-down`
    returns 200 **and the response is fully received** before the process exits;
    the process then exits 0. Assert on the received body, not just the exit
    code — this is the flush-before-shutdown requirement.
-11. `cmsd version` reports `dev-routes: absent` in a default build and
-   `compiled-in` under `-tags dev`.
+11. Every command runs under `go run ./cmd/<name>` with no tag. A CI step runs
+   `go run ./cmd/cmsd version`, `./cmd/cmsdb version`, and
+   `./cmd/earl version` to keep it that way.
 12. An unset, empty, or misspelled environment resolves to `production`. A
    table-driven test covers `""`, `"Development"`, `"dev"`, `"prod"` — only the
    exact string `development` enables anything.
 13. `cmsd serve` logs its environment on startup in both environments.
+14. The interlock, four cases. Built without the tag: exits 0 with `CMS_ENV`
+   unset and with `CMS_ENV=development`, panics with `CMS_ENV=production`.
+   Built with `-tags production`: panics with `CMS_ENV` unset, exits 0 with
+   `CMS_ENV=production`. Run the tagged half in CI with `-tags production`.
+15. `grep -rn "func init" ./cmd ./internal/buildenv` shows no `init()` calling
+   `Verify`. The call site is `main`, and a test asserts a `Verify` failure is
+   reachable only after `main` has begun.
+16. `make release` produces `linux/amd64` binaries; `file deploy/linux/amd64/cmsd`
+   confirms the platform and `CGO_ENABLED=0` needed no toolchain.
 
 **Out of scope.** Any behaviour beyond `/healthz` and shutdown.
 
@@ -207,9 +223,9 @@ over a scope can be computed.
 7. A user holding `EDIT` on a scope cannot create a `PUBLISH` grant on it; the
    attempt returns 403 and writes nothing.
 8. An expired session returns 401.
-9. `/__development/log-me-in/{email}` returns 404 in a default build, 404 in a
-   `-tags dev` build with `--env production`, and a session in a `-tags dev`
-   build with `--env development`. Three tests; the first gates release.
+9. `/__development/log-me-in/{email}` returns 404 with the default
+   environment, 404 under `--env production`, and issues a session under
+   `--env development`. Three tests; the first gates release.
 10. The session it issues carries exactly the user's real roles and grants —
    no elevation. Assert by comparing `Resolve` output against a
    password-authenticated session for the same user.
