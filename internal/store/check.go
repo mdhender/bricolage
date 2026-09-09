@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mdhender/bricolage/internal/migrate"
 	"zombiezen.com/go/sqlite"
@@ -35,20 +36,30 @@ type CheckReport struct {
 	// "ok" row removed. Empty means the database is structurally sound.
 	IntegrityProblems []string
 
-	// StuckJobLeases and OrphanedResources are the two application-level
-	// checks DESIGN.md 11 asks of "cmsdb check". Both are zero until the
-	// tables exist: jobs arrive in M6 and published resources in M9. They are
+	// StuckJobLeases is the number of jobs holding a lease that expired
+	// before the instant the check was run (PLAN.md M6). It is not damage:
+	// it is what a worker that died looks like from the outside, and the
+	// queue recovers on its own because an expired lease is not a lease.
+	// What it tells an operator is that something killed a worker and did
+	// not restart it.
+	StuckJobLeases int
+
+	// OrphanedResources is zero until published_resources exists in M9. It is
 	// reported rather than omitted so that the report does not change shape
-	// when they do.
-	StuckJobLeases    int
+	// when it does.
 	OrphanedResources int
 }
 
 // OK reports whether the check found nothing wrong.
+//
+// A stuck lease is deliberately not counted here. It is a fact worth
+// reporting and not a fault: the row is intact, the queue will claim the job
+// again when the lease expires, and a check that exited non-zero for it would
+// turn an ordinary worker restart into a page. Damage is what OK is about,
+// and damage is what the two lists above hold.
 func (r *CheckReport) OK() bool {
 	return len(r.ForeignKeyViolations) == 0 &&
 		len(r.IntegrityProblems) == 0 &&
-		r.StuckJobLeases == 0 &&
 		r.OrphanedResources == 0
 }
 
@@ -71,7 +82,12 @@ func (v ForeignKeyViolation) String() string {
 // It reads, so it runs on a reader connection: a check that took the write
 // connection would queue behind whatever the server is doing, and this is a
 // question about the file rather than an operation on it.
-func (db *DB) Check(ctx context.Context) (*CheckReport, error) {
+//
+// now is what a job lease is judged expired against. It is a parameter rather
+// than a clock this package reads, for the reason every instant here is
+// (invariant 3): "cmsdb check" holds the real clock and hands it down, and a
+// test can ask what the check would have said an hour later.
+func (db *DB) Check(ctx context.Context, now time.Time) (*CheckReport, error) {
 	report := &CheckReport{Path: db.path, Migrations: migrate.Count()}
 
 	err := db.Read(ctx, func(conn *sqlite.Conn) error {
@@ -110,7 +126,12 @@ func (db *DB) Check(ctx context.Context) (*CheckReport, error) {
 		if err != nil {
 			return fmt.Errorf("integrity_check: %w", err)
 		}
-		return nil
+
+		// The application-level check DESIGN.md 11 asks for. The query lives
+		// beside the rest of the queue's SQL, in jobs.go, so that there is one
+		// statement of what "stuck" means.
+		report.StuckJobLeases, err = stuckLeases(conn, now)
+		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("checking %q: %w", db.path, err)

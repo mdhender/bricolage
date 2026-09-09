@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/domain"
 	"github.com/mdhender/bricolage/internal/events"
 	"github.com/mdhender/bricolage/internal/ids"
+	"github.com/mdhender/bricolage/internal/jobs"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -115,7 +117,7 @@ func newSeedCmd() *cobra.Command {
 	}
 	addDBFlag(cmd, &dir)
 	cmd.Flags().BoolVar(&demo, "demo", false,
-		"also seed one sample document; needs \"cmsdb bootstrap admin\" to have run")
+		"also seed one sample document and one queued job; needs \"cmsdb bootstrap admin\" to have run")
 	return cmd
 }
 
@@ -260,7 +262,10 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 		}
 		if v.Title == demoTitle {
 			fmt.Fprintf(out, "demo: %s (already present, %s)\n", demoTitle, d.UID)
-			return nil
+			// The job is still offered: --demo seeds two things, and a run
+			// that found the document already there must not skip the half
+			// that is not. Its own idempotency check is below.
+			return seedDemoJob(ctx, db, out, author.ID, now)
 		}
 	}
 
@@ -310,5 +315,67 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 		return err
 	}
 	fmt.Fprintf(out, "demo: %s (%s, an open working draft in %q)\n", demoTitle, doc.UID, doc.State)
+
+	return seedDemoJob(ctx, db, out, author.ID, now)
+}
+
+// seedDemoJob puts one noop job on the queue (PLAN.md M6).
+//
+// The queue is the one part of this system nothing else can show you. A
+// document you can create from earl; a job you cannot, deliberately -- work is
+// scheduled by the operation that needs it, and until M9 no operation needs
+// any. So --demo, whose whole purpose is that somebody can see the system
+// working, seeds one, and "cmsd serve --workers 1" then runs it while you
+// watch. It is also what M6's end-to-end test drives.
+//
+// It is enqueued through the store rather than through internal/jobs, for the
+// reason everything in cmsdb is: this command owns no service, and the uid and
+// the instant are minted here from the real clock and handed down
+// (invariant 3).
+func seedDemoJob(ctx context.Context, db *store.DB, out io.Writer, authorID int64, now time.Time) error {
+	// Idempotent, like the rest of seed: a second run reports what is there
+	// rather than stacking copies. Any noop job at all is enough to say the
+	// queue has been seeded -- the point is that there is something to watch,
+	// not that there is exactly one of it.
+	existing, err := db.QueryJobs(ctx, domain.JobFilter{Kind: jobs.KindNoop, Limit: 1})
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		fmt.Fprintf(out, "demo: a %s job is already queued (%s)\n", jobs.KindNoop, existing[0].UID)
+		return nil
+	}
+
+	uid, err := ids.New(now)
+	if err != nil {
+		return err
+	}
+	job := domain.NewJob{
+		Kind: jobs.KindNoop,
+		// Bulk, because it is a demonstration and nothing is waiting for it.
+		// Every bulk operation defaults to priority 5 (DESIGN.md 9), and a
+		// sample that took the urgent end of the scale would teach the wrong
+		// habit to whoever copies it.
+		Priority:  domain.PriorityBulk,
+		CreatedBy: authorID,
+	}.Normalize(now)
+
+	seeded, err := db.EnqueueJob(ctx, store.NewJob{
+		UID: uid,
+		Job: job,
+		Event: domain.Event{
+			Type:    events.JobEnqueued,
+			ActorID: authorID,
+			Payload: map[string]any{
+				"uid": uid, "kind": job.Kind, "priority": job.Priority, "seed": true,
+			},
+			OccurredAt: now,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "demo: one %s job queued (%s); run \"cmsd serve --workers 1\" to watch it run\n",
+		seeded.Kind, seeded.UID)
 	return nil
 }

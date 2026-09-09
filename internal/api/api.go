@@ -64,10 +64,10 @@ func New(deps Deps) *Handler {
 //
 // M2 registered the session and identity routes and the grant-writing route
 // that carries the anti-escalation check; M3 added the document, version,
-// diff, and history routes, M4 the transitions, and M5 assignment, due dates,
-// and the queues. The publishing routes arrive with the milestones that
-// implement them; a route registered before its service method exists is a
-// 501 nobody asked for.
+// diff, and history routes, M4 the transitions, M5 assignment, due dates, and
+// the queues, and M6 the job queue. The publishing routes arrive with the
+// milestones that implement them; a route registered before its service
+// method exists is a 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
 	h := New(deps)
 
@@ -130,6 +130,18 @@ func Register(mux Mux, deps Deps) {
 	handle("DELETE "+Prefix+"documents/{uid}/due", h.authenticated(h.clearDue))
 	handle("GET "+Prefix+"queues", h.authenticated(h.listQueues))
 	handle("GET "+Prefix+"queues/{slug}", h.authenticated(h.showQueue))
+
+	// The job queue (PLAN.md M6). GET reads it; POST .../retry puts an
+	// abandoned job back on it. There is deliberately no route that creates a
+	// job: work is scheduled by the operation that needs it, and a route
+	// taking a kind and a payload would run any handler in the binary with
+	// arguments the client chose.
+	//
+	// The path speaks uid rather than the {id} of DESIGN.md 12, because
+	// invariant 10 says the API speaks uid only and an invariant outranks a
+	// path spelled in an example. Jobs carry one, as of migration 0008.
+	handle("GET "+Prefix+"jobs", h.authenticated(h.listJobs))
+	handle("POST "+Prefix+"jobs/{uid}/retry", h.authenticated(h.retryJob))
 
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 	handle("GET "+Prefix+"workflows", h.authenticated(h.listWorkflows))

@@ -9,6 +9,7 @@ import (
 
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
+	"github.com/mdhender/bricolage/internal/jobs"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/mdhender/bricolage/internal/workflow"
 )
@@ -43,6 +44,12 @@ type Service struct {
 	// (invariant 4).
 	engine *workflow.Engine
 
+	// queue is the job queue (PLAN.md M6). It is held rather than built per
+	// call so that there is one of it in the process: the worker pool and the
+	// API both work through this one, which is what makes "when does this
+	// lease expire" have a single answer.
+	queue *jobs.Queue
+
 	// queues are the saved queue definitions (PLAN.md M5). They are
 	// configuration rather than schema: a queue has no identity anybody
 	// refers to and nothing points at one, so naming a few is a config file's
@@ -76,6 +83,10 @@ type Options struct {
 	// Queues are the saved queue definitions; an empty set means
 	// config.DefaultQueues.
 	Queues config.QueueSet
+
+	// JobLease is how long a worker's claim on a job lasts; zero means
+	// jobs.DefaultLease.
+	JobLease time.Duration
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -120,6 +131,12 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		return nil, err
 	}
 	s.engine = engine
+
+	queue, err := jobs.NewQueue(db, opts.Clock, opts.JobLease)
+	if err != nil {
+		return nil, err
+	}
+	s.queue = queue
 	return s, nil
 }
 

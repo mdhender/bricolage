@@ -552,7 +552,7 @@ func TestCloseIsIdempotent(t *testing.T) {
 func TestCheck(t *testing.T) {
 	db := memoryStore(t)
 
-	report, err := db.Check(t.Context())
+	report, err := db.Check(t.Context(), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}

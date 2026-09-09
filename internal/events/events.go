@@ -103,6 +103,48 @@ const (
 	// assignee changing. The payload carries the new date, or says it was
 	// cleared.
 	DocumentDueChanged = "document.due_changed"
+
+	// The job events (PLAN.md M6). They record what became of a piece of
+	// scheduled work, which is the question asked when something that should
+	// have been published is not there.
+	//
+	// There are five of them and not seven, and the two that are missing are
+	// the interesting decision. A claim and a lease extension are not written
+	// as events: a lease is not durable state about the world, it is a
+	// deadline that expires on its own, and the row already carries the whole
+	// of it -- lease_owner, lease_expires_at, and the attempts counter the
+	// claim itself increments. Writing a row per claim would cost an event
+	// per attempt of every job in a fifty-thousand document republish to
+	// record something no longer true one lease later. What invariant 7 asks
+	// for is that an operation's effect be reconstructible, and every durable
+	// effect a job has -- it was scheduled, it worked, an attempt failed, it
+	// was given up on, somebody put it back -- has an event below.
+
+	// JobEnqueued is written when a job is scheduled. The payload carries the
+	// kind, the priority, and when it may start; it never carries the
+	// payload, which is the handler's argument and may name anything.
+	JobEnqueued = "job.enqueued"
+
+	// JobCompleted is written when a handler returns without an error. The
+	// payload names the worker that ran it and which attempt succeeded.
+	JobCompleted = "job.completed"
+
+	// JobFailed is written when an attempt fails and another is allowed. The
+	// payload carries the error, the attempt number, and when the retry is
+	// scheduled for.
+	JobFailed = "job.failed"
+
+	// JobAbandoned is written when the last allowed attempt fails. It is a
+	// separate type from JobFailed because "it is being retried" and "nobody
+	// is going to try again" are the two different things a person reading a
+	// queue needs to tell apart, and burying the difference in a payload
+	// field is how the second one gets missed.
+	JobAbandoned = "job.abandoned"
+
+	// JobRetried is written when somebody puts an abandoned job back on the
+	// queue. The payload records the failure it is being retried out of, so
+	// that the reason survives the columns the retry clears.
+	JobRetried = "job.retried"
 )
 
 // names are the display names the admin screens and the CLI show. A type with
@@ -126,6 +168,12 @@ var names = map[string]string{
 	DocumentAssigned:         "Assigned",
 	DocumentUnassigned:       "Unassigned",
 	DocumentDueChanged:       "Due date changed",
+
+	JobEnqueued:  "Job scheduled",
+	JobCompleted: "Job completed",
+	JobFailed:    "Job attempt failed",
+	JobAbandoned: "Job abandoned",
+	JobRetried:   "Job retried",
 }
 
 // All returns every event type this binary knows, in a stable order.
@@ -147,6 +195,11 @@ func All() []string {
 		DocumentAssigned,
 		DocumentUnassigned,
 		DocumentDueChanged,
+		JobEnqueued,
+		JobCompleted,
+		JobFailed,
+		JobAbandoned,
+		JobRetried,
 	}
 }
 

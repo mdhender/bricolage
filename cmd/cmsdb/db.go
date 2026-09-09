@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/migrate"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/spf13/cobra"
@@ -146,7 +147,11 @@ func newCheckCmd() *cobra.Command {
 			}
 			defer db.Close()
 
-			report, err := db.Check(cmd.Context())
+			// The one place outside internal/clock that reads the wall clock
+			// is main, and this is one of them: a lease is judged expired
+			// against an instant, and the instant is constructed here and
+			// handed down (invariant 3).
+			report, err := db.Check(cmd.Context(), clock.Real{}.Now())
 			if err != nil {
 				return err
 			}
@@ -162,6 +167,9 @@ func newCheckCmd() *cobra.Command {
 			for _, p := range report.IntegrityProblems {
 				fmt.Fprintf(out, "integrity: %s\n", p)
 			}
+			// A stuck lease is reported and does not fail the check: it is
+			// what a worker that died looks like from the outside, and the
+			// queue recovers on its own when the lease expires.
 			fmt.Fprintf(out, "stuck job leases: %d\n", report.StuckJobLeases)
 			fmt.Fprintf(out, "orphaned resources: %d\n", report.OrphanedResources)
 

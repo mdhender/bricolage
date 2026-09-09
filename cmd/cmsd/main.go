@@ -25,6 +25,7 @@ import (
 	"github.com/mdhender/bricolage/internal/buildenv"
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
+	"github.com/mdhender/bricolage/internal/jobs"
 	"github.com/mdhender/bricolage/internal/migrate"
 	"github.com/mdhender/bricolage/internal/server"
 	"github.com/mdhender/bricolage/internal/service"
@@ -67,6 +68,16 @@ type flags struct {
 	// because the route table does not depend on it and a flag that is parsed
 	// and ignored is worse than no flag.
 	db string
+
+	// workers is how many job workers run inside this process
+	// (DESIGN.md 9, 11). It is on serve and not on routes for the reason db
+	// is: the route table does not depend on it.
+	//
+	// Zero disables them, which is a supported configuration and not a
+	// mistake: an operator running several cmsd processes behind one proxy
+	// wants the workers in one of them, and a maintenance window wants them
+	// in none.
+	workers int
 }
 
 func newRootCmd() *cobra.Command {
@@ -135,7 +146,27 @@ func newServeCmd(f *flags) *cobra.Command {
 				return err
 			}
 
-			srv, err := settings.server(svc)
+			// The workers. They are handed to the server rather than started
+			// here, because they have to stop when it does and a second place
+			// that decided when that was would be a second shutdown path
+			// (invariant 17). --workers 0 hands it nothing and none run.
+			var background server.Background
+			if f.workers > 0 {
+				pool, err := jobs.NewPool(jobs.PoolOptions{
+					Queue:    svc.JobQueue(),
+					Registry: jobs.NewRegistry(),
+					Workers:  f.workers,
+					Logger:   settings.log,
+				})
+				if err != nil {
+					return err
+				}
+				background = pool
+			} else {
+				settings.log.Info("job workers disabled", "workers", f.workers)
+			}
+
+			srv, err := settings.server(svc, background)
 			if err != nil {
 				return err
 			}
@@ -154,6 +185,8 @@ func newServeCmd(f *flags) *cobra.Command {
 	cmd.Flags().StringVar(&f.db, "db", "",
 		"directory holding cms.db; it must already exist, and cmsd neither creates nor migrates it")
 	_ = cmd.MarkFlagRequired("db")
+	cmd.Flags().IntVar(&f.workers, "workers", jobs.DefaultWorkers,
+		"background job workers to run in this process; 0 disables them")
 	return cmd
 }
 
@@ -174,8 +207,9 @@ func newRoutesCmd(f *flags) *cobra.Command {
 			// No database, but the table still declares what "serve" would
 			// mount: the question this command answers is "are the
 			// /__development/* routes registered", and a table missing half
-			// the server answers it wrongly.
-			srv, err := settings.server(nil)
+			// the server answers it wrongly. No workers either: the route
+			// table does not depend on them, and this command exits.
+			srv, err := settings.server(nil, nil)
 			if err != nil {
 				return err
 			}
@@ -263,8 +297,9 @@ func resolve(f *flags) (*settings, error) {
 }
 
 // server builds the Server. A nil service is the "cmsd routes" case: the table
-// declares what serve would mount, with handlers that refuse.
-func (s *settings) server(svc *service.Service) (*server.Server, error) {
+// declares what serve would mount, with handlers that refuse. A nil background
+// is a server that runs no job workers.
+func (s *settings) server(svc *service.Service, background server.Background) (*server.Server, error) {
 	return server.New(server.Options{
 		Environment:                 s.resolution.Environment,
 		Addr:                        s.addr,
@@ -276,5 +311,6 @@ func (s *settings) server(svc *service.Service) (*server.Server, error) {
 		DeclareRoutesWithoutService: svc == nil,
 		Origin:                      s.origin,
 		TrustedProxies:              s.trusted,
+		Background:                  background,
 	})
 }

@@ -108,17 +108,18 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M5 are complete and M6 has not started. `cmsdb` can `init`,
+M0 through M6 are complete and M7 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
 refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
 the session, identity, grant, document, version, diff, history, transition,
-workflow, assignment, due-date, and queue routes plus `/healthz`. `earl` can
-`login` (with `--dev`), `whoami`, `logout`, `admin grant`, `admin assign`,
-`queue [SLUG]`, and
+workflow, assignment, due-date, queue, and job routes plus `/healthz`. It also
+hosts the background job workers, behind `--workers N` (default 1, `0` to
+disable). `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
+`admin assign`, `queue [SLUG]`, `job list|retry`, and
 `doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due`.
 
-The schema is seven migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is eight migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -130,7 +131,7 @@ indexes that make "a site-specific workflow wins over the general one" a rule
 rather than a tie-break), and `0007_queue_indexes.sql` (the three indexes M5's
 queue queries seek on, replacing the partial `documents_mine` — which could not
 answer "unassigned", since SQLite may only use a partial index when the query's
-`WHERE` implies the index's). `grants` carries the scope columns whose target table exists; the
+`WHERE` implies the index's), and `0008_jobs.sql` (the queue). `grants` carries the scope columns whose target table exists; the
 rest arrive with the migration that creates theirs, because SQLite cannot add a
 foreign key to a column that already exists. `internal/domain` and
 `internal/authz` already carry and resolve the whole scope.
@@ -156,6 +157,32 @@ work over would mean taking the draft away from the person being handed it.
 Saved queue definitions live in `internal/config`, not in the schema
 (`DESIGN.md` §14).
 
+The job queue is claimed by one statement and held by a lease that expires on
+its own. `store.ClaimJob` is an `UPDATE ... RETURNING` that picks its own
+victim in a subquery, so there is no window between choosing a job and taking
+it; every other write a worker makes matches on `lease_owner`, so a worker that
+was overtaken cannot report over the work of the one that overtook it.
+`jobs_claimable` leads on `priority` rather than on `scheduled_for` — the
+`ORDER BY` is priority first, and an index cannot both satisfy a range on its
+leading column and order by a later one — and a test asserts that with
+`EXPLAIN QUERY PLAN` over the statement itself. Jobs carry a `uid` and the API
+speaks it (invariant 10); `DESIGN.md` §12's `/jobs/{id}/retry` was corrected,
+not the rule.
+
+Claims and heartbeats deliberately write no event. A lease is a deadline that
+expires on its own and the row carries all of it, including the `attempts` the
+claim increments; the five events are `job.enqueued`, `job.completed`,
+`job.failed`, `job.abandoned`, and `job.retried`. The reasoning is in
+`internal/events/events.go`.
+
+The workers are handed to `internal/server` as a `Background` and stopped by
+it, after the HTTP drain — one shutdown path with the workers in it
+(invariant 17), rather than a second one beside it. A shutdown releases the
+lease of an in-flight job rather than abandoning it, so the next worker finds
+it at once. Nothing enqueues a job from the API and nothing should: work is
+scheduled by the operation that needs it, and `cmsdb seed --demo` queues one
+`noop` job so the loop can be watched before M9 gives it real work.
+
 Exactly one statement writes `documents.state`: the `UPDATE` inside
 `store.ApplyTransition`, which takes the engine's check as a callback and
 cannot run without it. `internal/workflow` is its only caller (invariant 4),
@@ -164,8 +191,8 @@ test in `internal/workflow` enforce both. Creating a document is not a
 transition — it starts in the initial state rather than moving into it — so
 `CreateDocument` writes the column once at `INSERT`.
 
-`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,api,reqctx}`
-are real. `internal/{publish,jobs,render,web}` are still a `doc.go` stating the
+`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx}`
+are real. `internal/{publish,render,web}` are still a `doc.go` stating the
 package's responsibility and permitted imports — read that doc before adding
 the first real file to one.
 

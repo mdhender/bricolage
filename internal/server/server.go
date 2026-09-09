@@ -78,6 +78,30 @@ type Options struct {
 	// TrustedProxies are the networks X-Forwarded-* headers are honoured
 	// from (invariant 14). Nil means config.DefaultTrustedProxies.
 	TrustedProxies []*net.IPNet
+
+	// Background is the job worker pool, or nil for a server that runs none
+	// -- which is "--workers 0" and "cmsd routes" alike.
+	//
+	// It is here rather than started beside the server in main because of
+	// invariant 17. Workers have to stop when the server stops, and a second
+	// place that decided when that was would be a second shutdown path. This
+	// one starts them, drains HTTP first, then cancels them and waits, which
+	// is the order DESIGN.md 11 gives: stop accepting, drain in-flight
+	// requests, let workers finish the current job or release its lease,
+	// close the pool.
+	Background Background
+}
+
+// Background is something the server runs alongside serving and stops as part
+// of its one shutdown path.
+//
+// Run must return when its context ends, and only once whatever it started has
+// stopped; the server waits on it. It is an interface rather than the concrete
+// pool so that internal/server does not import internal/jobs: the composition
+// root wires the two together, and a transport package that knew about the job
+// queue would be a dependency pointing the wrong way (DESIGN.md 3).
+type Background interface {
+	Run(ctx context.Context) error
 }
 
 // Server is cmsd's HTTP server: one route table, one shutdown path.
@@ -94,6 +118,7 @@ type Server struct {
 	declareAPI bool
 	origin     config.PublicOrigin
 	trusted    []*net.IPNet
+	background Background
 
 	// handler is the mux with the middleware around it: the request id, the
 	// resolved client address, and the CSRF protection. It is what Serve
@@ -157,6 +182,7 @@ func New(opts Options) (*Server, error) {
 		resolution:   opts.Resolution,
 		svc:          opts.Service,
 		declareAPI:   opts.DeclareRoutesWithoutService,
+		background:   opts.Background,
 		origin:       origin,
 		trusted:      trusted,
 		shutdown:     make(chan string, 1),
@@ -250,6 +276,24 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 
 	s.logStart(ln.Addr())
 
+	// The workers run under a context of their own so that the drain can end
+	// them after the HTTP shutdown rather than at the same moment. workersDone
+	// is closed when Run returns, which it does only once every worker has
+	// finished the job it was holding or released its lease.
+	workersCtx, stopWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopWorkers()
+	workersDone := make(chan struct{})
+	if s.background == nil {
+		close(workersDone)
+	} else {
+		go func() {
+			defer close(workersDone)
+			if err := s.background.Run(workersCtx); err != nil {
+				s.log.Error("job workers stopped with an error", "error", err)
+			}
+		}()
+	}
+
 	if s.timeout > 0 {
 		s.log.Info("shutdown timer armed", "timeout", s.timeout.String())
 		t := s.afterFunc(s.timeout, func() { s.RequestShutdown(ReasonTimeout) })
@@ -282,6 +326,23 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	if serr := <-serveErr; !errors.Is(serr, http.ErrServerClosed) {
 		err = errors.Join(err, serr)
 	}
+
+	// The workers stop after the requests have drained, which is the order
+	// DESIGN.md 11 gives and the only order that makes sense: a request still
+	// in flight may still be enqueuing work. Then we wait, because "let
+	// workers finish the current job or release its lease" is a promise that
+	// is only kept if somebody waits for them to do it.
+	stopWorkers()
+	select {
+	case <-workersDone:
+	case <-drainCtx.Done():
+		// The drain budget ran out with a job still in flight. Its lease
+		// expires on its own and another worker takes it, which is the whole
+		// reason the lease exists; saying so is better than looking hung.
+		s.log.Warn("job workers did not stop within the drain timeout; their leases will expire",
+			"drain_timeout", s.drainTimeout.String())
+	}
+
 	if err != nil {
 		return fmt.Errorf("shutdown after %s: %w", reason, err)
 	}

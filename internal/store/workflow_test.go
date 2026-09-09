@@ -182,7 +182,7 @@ func TestDocumentsRebuildKeptItsRows(t *testing.T) {
 
 	// The rebuild left referential integrity intact: nothing points at a row
 	// that is not there.
-	report, err := db.Check(t.Context())
+	report, err := db.Check(t.Context(), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestRebuildTransfersRowsWrittenBeforeIt(t *testing.T) {
 		t.Fatalf("the document has %d versions after the rebuild, want 2; DROP TABLE with foreign keys on would have cascaded them away", len(versions))
 	}
 
-	report, err := db.Check(t.Context())
+	report, err := db.Check(t.Context(), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}

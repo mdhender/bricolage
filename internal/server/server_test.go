@@ -258,3 +258,125 @@ func TestNewDefaultsToTheLoopbackAddr(t *testing.T) {
 		t.Fatalf("Addr() = %q, which is not loopback", s.Addr())
 	}
 }
+
+// fakeBackground stands in for the worker pool: it records when it started and
+// when it was told to stop, so a test can assert on the order rather than on
+// the pool's own behaviour, which is internal/jobs' to test.
+type fakeBackground struct {
+	started chan struct{}
+	// stopped is closed when Run returns, which is what the server waits for.
+	stopped chan struct{}
+
+	// hold, when non-nil, blocks Run's return until it is closed. It is how a
+	// test makes the worker slower than the drain budget.
+	hold chan struct{}
+}
+
+func newFakeBackground() *fakeBackground {
+	return &fakeBackground{started: make(chan struct{}), stopped: make(chan struct{})}
+}
+
+func (b *fakeBackground) Run(ctx context.Context) error {
+	close(b.started)
+	<-ctx.Done()
+	if b.hold != nil {
+		<-b.hold
+	}
+	close(b.stopped)
+	return nil
+}
+
+// TestBackgroundWorkersStopThroughTheOneShutdownPath is PLAN.md M6's
+// "workers hosted in cmsd" and invariant 17 together.
+//
+// The workers are started by Serve and stopped by Serve, so there is still one
+// shutdown path with three ways in. A second place that decided when the
+// workers stopped would be a second shutdown path however carefully it was
+// written.
+func TestBackgroundWorkersStopThroughTheOneShutdownPath(t *testing.T) {
+	for name, shutdown := range map[string]func(*Server, context.CancelFunc){
+		"a cancelled context": func(_ *Server, cancel context.CancelFunc) { cancel() },
+		"a shutdown request":  func(s *Server, _ context.CancelFunc) { s.RequestShutdown("test") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			workers := newFakeBackground()
+			s, err := New(Options{
+				Environment: config.Production,
+				Addr:        "127.0.0.1:0",
+				Background:  workers,
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := serveInBackground(ctx, t, s, listen(t))
+
+			select {
+			case <-workers.started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Serve did not start the workers")
+			}
+
+			shutdown(s, cancel)
+			if err := waitFor(t, done, 5*time.Second); err != nil {
+				t.Fatalf("Serve = %v, want nil", err)
+			}
+
+			// Serve returned only after the workers had stopped. That is the
+			// promise "let workers finish the current job or release its
+			// lease" rests on: without the wait, the process exits while a
+			// job is still leased.
+			select {
+			case <-workers.stopped:
+			default:
+				t.Error("Serve returned while the workers were still running")
+			}
+		})
+	}
+}
+
+// TestServeWaitsNoLongerThanTheDrainBudget is the other side of that wait: a
+// worker that will not stop must not hang the process, because the lease it is
+// holding expires on its own.
+func TestServeWaitsNoLongerThanTheDrainBudget(t *testing.T) {
+	workers := newFakeBackground()
+	workers.hold = make(chan struct{})
+	defer close(workers.hold)
+
+	s, err := New(Options{
+		Environment:  config.Production,
+		Addr:         "127.0.0.1:0",
+		Background:   workers,
+		DrainTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := serveInBackground(ctx, t, s, listen(t))
+	<-workers.started
+
+	cancel()
+	if err := waitFor(t, done, 5*time.Second); err != nil {
+		t.Fatalf("Serve = %v, want nil", err)
+	}
+}
+
+// TestServeWithoutWorkersStillShutsDown is "--workers 0": a nil Background is
+// a supported configuration, not a wiring mistake.
+func TestServeWithoutWorkersStillShutsDown(t *testing.T) {
+	s, err := New(Options{Environment: config.Production, Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := serveInBackground(ctx, t, s, listen(t))
+	cancel()
+	if err := waitFor(t, done, 5*time.Second); err != nil {
+		t.Fatalf("Serve = %v, want nil", err)
+	}
+}

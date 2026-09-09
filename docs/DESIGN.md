@@ -897,6 +897,7 @@ with metadata in the database. The database stores no blobs.
 ```sql
 CREATE TABLE jobs (
   id               INTEGER PRIMARY KEY,
+  uid              TEXT    NOT NULL UNIQUE,
   kind             TEXT    NOT NULL,
   priority         INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
   scheduled_for    TEXT    NOT NULL,
@@ -912,9 +913,36 @@ CREATE TABLE jobs (
   created_at       TEXT    NOT NULL
 ) STRICT;
 
-CREATE INDEX jobs_claimable ON jobs(scheduled_for, priority)
+CREATE INDEX jobs_claimable ON jobs(priority, scheduled_for, id)
   WHERE completed_at IS NULL AND failed_at IS NULL;
+
+CREATE INDEX jobs_leased ON jobs(lease_expires_at)
+  WHERE lease_expires_at IS NOT NULL AND completed_at IS NULL AND failed_at IS NULL;
+
+CREATE INDEX jobs_failed ON jobs(failed_at) WHERE failed_at IS NOT NULL;
 ```
+
+`uid` is here because §12 addresses a job in a URL and invariant 10 says the API
+speaks `uid` only. An earlier draft of this section had no `uid` and §12 wrote
+the retry route as `/jobs/{id}/retry`; the invariant outranks a path spelled in
+an example, so jobs carry a uid like every other externally addressable row and
+the route below says `{uid}`.
+
+`jobs_claimable` leads on `priority`, not on `scheduled_for` as an earlier draft
+had it, because the claim below orders by priority first. `scheduled_for` carries
+a range constraint, and an index cannot both satisfy a range on its leading
+column and order by a later one: led by `scheduled_for` SQLite seeks the range
+and then sorts the whole ready backlog to take one row off the front, once per
+claim. Led by `priority` it walks the index in exactly the ORDER BY and `LIMIT 1`
+stops it. The trade, stated rather than discovered later: a claim against a queue
+whose pending jobs are *all* scheduled for the future walks the partial index
+before concluding that nothing is ready, where the other order would have seeked
+an empty range. That is the cheaper half. `internal/store` asserts both halves
+with `EXPLAIN QUERY PLAN` over the statement it actually runs.
+
+`jobs_leased` answers "which leases are held past expiry", which is what
+`cmsdb check` reports; it is partial on the rows a lease is held over, so it is
+small by construction. `jobs_failed` is `earl job list --failed`.
 
 Claiming is one statement:
 
@@ -941,6 +969,39 @@ Publish. Every bulk operation defaults to priority 5.
 
 Workers run inside `cmsd` by default (`--workers N`, default 1, `0` to disable).
 Long jobs must heartbeat by extending their lease.
+
+**Every write a worker makes names its lease.** Complete, fail, release, and
+extend all match on `lease_owner`, and a mismatch is a conflict rather than a
+silent no-op. A worker whose lease expired while it was working has been
+overtaken: another worker may hold the job, and letting the first one report
+would record an outcome over work the second is still doing.
+
+**A claim is not an event.** Every durable thing that becomes of a job writes
+one — `job.enqueued`, `job.completed`, `job.failed` (an attempt failed, another
+is coming), `job.abandoned` (the attempts are spent), `job.retried` (somebody put
+it back) — and claiming and heartbeating do not. A lease is not durable state
+about the world; it is a deadline that expires on its own, and the row carries
+the whole of it, including the `attempts` counter the claim itself increments.
+An event per claim would cost one row per attempt of every job in a
+fifty-thousand document republish to record something no longer true one lease
+later. Invariant 7 asks that an operation's effect be reconstructible, and every
+effect a job has is above.
+
+**A failed attempt is rescheduled with backoff**, doubling from ten seconds to a
+cap of five minutes (`domain.RetryDelay`). Retrying at once is how a queue turns
+one outage into five failures in the same second and a job somebody has to find
+by hand. A retry, by contrast, runs now and resets `attempts` to zero: it is a
+decision to try the whole thing again, and a job put back with its budget spent
+would fail once and be abandoned again. `last_error` survives a retry.
+
+**Graceful shutdown releases the lease of an in-flight job.** The workers are
+handed to the server and stopped by it, after the HTTP drain, so there is still
+one shutdown path (invariant 17). The handler's context is cancelled; if it
+finishes anyway the job is completed, and otherwise the lease is dropped — on a
+context deliberately not the cancelled one — so the next worker finds the job at
+once rather than in a lease's time. The attempt still counts, because a queue
+that forgot attempts it had made would let a job that reliably kills its worker
+run forever.
 
 ## 10. Events and notifications
 
@@ -1006,6 +1067,7 @@ cmsdb migrate status  --db DIR                show applied/pending
 cmsdb migrate up      --db DIR [--to N]       apply pending migrations
 cmsdb bootstrap admin --db DIR --email E --name N [--password-stdin]
 cmsdb seed            --db DIR [--demo]       roles, site, element types; reports the workflow
+                                              --demo also queues one noop job to watch
 cmsdb check           --db DIR                integrity: FK check, orphaned resources, stuck leases
 cmsdb vacuum          --db DIR
 ```
@@ -1024,6 +1086,17 @@ second run with the same email updates nothing and exits non-zero with a clear
 message.
 
 `seed` is separate from `init` so that tests can create an empty schema.
+`--demo` additionally creates one sample document and queues one `noop` job, so
+that the editorial cycle and the worker loop can both be watched on a database
+somebody has just made; it needs `bootstrap admin` to have run, because there is
+no system user to attribute either to.
+
+`check` reports **leases held past expiry** alongside the integrity checks, and
+a count above zero does not fail it. A stuck lease is not damage: it is what a
+worker that died looks like from the outside, and the queue recovers on its own
+because an expired lease is not a lease. What it tells an operator is that
+something killed a worker and did not restart it — worth a line in a report,
+not worth paging somebody for.
 
 ### `cmsd` — the server
 
@@ -1286,8 +1359,8 @@ earl doc comment     UID [--reply-to ID] BODY
 earl doc events      UID
 earl publish         UID [--at TIME] [--channel C]... [--dry-run]
 earl queue           SLUG
-earl job list        [--failed] [--pending]
-earl job retry       ID
+earl job list        [--failed] [--pending] [--kind K] [--limit N]
+earl job retry       UID
 earl admin grant     --role R --privilege P [scope flags...]
 earl admin assign    --user UID --role R
 ```
@@ -1340,8 +1413,8 @@ GET    /api/v1/documents/{uid}/resources
 
 GET    /api/v1/queues                           the saved definitions
 GET    /api/v1/queues/{slug}
-GET    /api/v1/jobs
-POST   /api/v1/jobs/{id}/retry
+GET    /api/v1/jobs                            ?pending, ?failed, ?kind, ?limit
+POST   /api/v1/jobs/{uid}/retry
 GET    /api/v1/notifications
 POST   /api/v1/notifications/{id}/read
 
@@ -1351,6 +1424,20 @@ POST   /api/v1/users/{uid}/roles                 assign a role; the same refusal
 GET/POST/PATCH  /api/v1/sites, /categories, /output-channels,
                 /element-types, /workflows, /roles, /grants, /users
 ```
+
+There is deliberately **no route that creates a job.** Nothing a person does is
+"enqueue a job": they publish something, and the operation that publishes it
+schedules the work. A route taking a kind and a payload would be a way to run any
+handler in the binary with arguments the client chose.
+
+Reading the queue needs `read` resolved against the *system subject* — the empty
+`Subject`, which only a grant constraining nothing matches. Retrying needs
+`publish` over the same. The queue is not on a site and not in a category, so a
+site-scoped grant says what its holder may do to that site's documents and says
+nothing at all about the process that publishes them. Retrying re-runs whatever
+the enqueuing operation decided, so the person who may do that is the person who
+may publish anywhere; requiring less would make the retry button a way around the
+privilege the original operation needed.
 
 Modelling **transitions as a subresource** is the point of the design: `GET`
 tells you what the state machine permits and why, `POST` performs one. It makes
