@@ -361,6 +361,29 @@ These are not style preferences. Violating one is a bug even if the tests pass.
     included; **WAL on every persistent store**. Both are per-connection
     settings, so one connection that skips them is silently wrong for its whole
     life.
+23. **Autocomplete is denied by default on every form control.** A field opts
+    *in* to being filled, with a comment saying why; a field that declares
+    nothing is a bug, because "nothing" means the browser guesses. Deny with
+    `{{noAutofill}}`, which emits `autocomplete="off"` and the three vendor
+    opt-outs together; a test walks the embedded templates and fails on a
+    control carrying neither that nor a deliberate token.
+
+    This is more aggressive than the platform intends and the reason is not
+    tidiness. Password managers treat `autocomplete="off"` as advisory, because
+    sites have used it to break them on purpose, and Chrome overrides it wherever
+    its heuristics feel confident. The signature they key on is `type="email"`
+    with `name="email"` — which is exactly the shape of the *invite* box, a
+    field whose one impossible value is the address of the person typing. So the
+    address inputs that are not credentials are `type="text"` with
+    `inputmode="email"`: the mobile keyboard keeps its `@` and the heuristic
+    loses its cue. **Validation was never the client's job here** —
+    `domain.ValidateEmail` is the check, and it is deliberately weak because the
+    strong check is delivery.
+
+    Exactly two forms opt in today, and both are the viewer's own credentials:
+    the login form and the invitation redemption form. Anything else asking to
+    opt in should explain, in the template, whose data the field holds — if the
+    answer is not "the person looking at the screen", the answer is no.
 
 ## Code conventions
 

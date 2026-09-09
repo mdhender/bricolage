@@ -20,7 +20,7 @@ also refuses, the POST answers 409 and says which guard. */ -}}
         <form class="inline-form row" method="post" action="/documents/{{$.DocumentUID}}/transitions"
               hx-post="/documents/{{$.DocumentUID}}/transitions" hx-target="#actions" hx-swap="outerHTML">
           <input type="hidden" name="to" value="{{.Transition.To}}">
-          {{if .NeedsNote}}<input class="inline" type="text" name="note" placeholder="note" required>{{end}}
+          {{if .NeedsNote}}<input class="inline" type="text" name="note" placeholder="note" required {{noAutofill}}>{{end}}
           <button class="primary" type="submit">{{.Transition.Name}}</button>
         </form>
       {{else}}

@@ -31,7 +31,7 @@ carries a resolved stamp, and replying to a reply joins that reply's thread
         <form class="inline-form row" method="post" action="/documents/{{$.DocumentUID}}/comments"
               hx-post="/documents/{{$.DocumentUID}}/comments" hx-target="#threads" hx-swap="outerHTML">
           <input type="hidden" name="reply_to" value="{{.Comment.UID}}">
-          <input class="inline" type="text" name="body" placeholder="reply" required>
+          <input class="inline" type="text" name="body" placeholder="reply" required {{noAutofill}}>
           <button type="submit">Reply</button>
         </form>
       </div>
@@ -42,7 +42,7 @@ carries a resolved stamp, and replying to a reply joins that reply's thread
   <form method="post" action="/documents/{{.DocumentUID}}/comments"
         hx-post="/documents/{{.DocumentUID}}/comments" hx-target="#threads" hx-swap="outerHTML">
     <label for="new-comment">New thread</label>
-    <textarea id="new-comment" name="body" required></textarea>
+    <textarea id="new-comment" name="body" required {{noAutofill}}></textarea>
     <p><button class="primary" type="submit">Comment</button></p>
   </form>
 </div>

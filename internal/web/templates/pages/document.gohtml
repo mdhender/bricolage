@@ -30,7 +30,7 @@
       </p>
       {{if .Mine}}
         <form class="row" method="post" action="/documents/{{.Doc.UID}}/checkin">
-          <input class="inline" type="text" name="note" placeholder="check-in note">
+          <input class="inline" type="text" name="note" placeholder="check-in note" {{noAutofill}}>
           <button class="primary" type="submit">Check in</button>
         </form>
       {{end}}
@@ -93,15 +93,15 @@
         {{if not (zero .Doc.DueAt)}}&middot; due {{stamp .Doc.DueAt}}{{if .Overdue}} <span class="pill late">late</span>{{end}}{{end}}</p>
       <form method="post" action="/documents/{{.Doc.UID}}/assignment">
         <label for="user">Assign to</label>
-        <input id="user" name="user" placeholder="me, or a user uid" required>
+        <input id="user" name="user" placeholder="me, or a user uid" required {{noAutofill}}>
         <label for="due_at">Due</label>
-        <input id="due_at" type="datetime-local" name="due_at" value="{{forInput .Doc.DueAt}}">
+        <input id="due_at" type="datetime-local" name="due_at" value="{{forInput .Doc.DueAt}}" {{noAutofill}}>
         <p><button type="submit">Assign</button></p>
       </form>
       <div class="row">
         <form class="inline-form" method="post" action="/documents/{{.Doc.UID}}/assignment/clear"><button type="submit">Unassign</button></form>
         <form class="inline-form row" method="post" action="/documents/{{.Doc.UID}}/due">
-          <input class="inline" type="datetime-local" name="due_at" value="{{forInput .Doc.DueAt}}">
+          <input class="inline" type="datetime-local" name="due_at" value="{{forInput .Doc.DueAt}}" {{noAutofill}}>
           <button type="submit">Set due</button>
         </form>
       </div>
@@ -115,7 +115,7 @@
       </ul>
       <form method="post" action="/documents/{{.Doc.UID}}/categories">
         <label for="categories">Categories, the primary one first</label>
-        <input id="categories" name="categories" placeholder="/features/film/, /features/">
+        <input id="categories" name="categories" placeholder="/features/film/, /features/" {{noAutofill}}>
         <p><button type="submit">File</button></p>
       </form>
       {{with .Categories}}
@@ -128,7 +128,7 @@
       {{if .Channels}}
         <form method="post" action="/documents/{{.Doc.UID}}/preview">
           <label for="channel">Output channel</label>
-          <select id="channel" name="channel">
+          <select id="channel" name="channel" {{noAutofill}}>
             <option value="">the site's only one</option>
             {{range .Channels}}<option value="{{.UID}}">{{.Name}}</option>{{end}}
           </select>
@@ -139,7 +139,7 @@
         </form>
         <form method="post" action="/documents/{{.Doc.UID}}/publications">
           <label for="at">Publish at (empty means now)</label>
-          <input id="at" type="datetime-local" name="at">
+          <input id="at" type="datetime-local" name="at" {{noAutofill}}>
           <p class="row">
             <button class="primary" type="submit">Publish</button>
             <button type="submit" name="dry_run" value="on">Dry run</button>

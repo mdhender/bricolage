@@ -12,32 +12,32 @@ there, by name. */ -}}
   <form method="post" action="/documents/{{.Doc.UID}}/edit">
     <fieldset style="border:0;padding:0;margin:0"{{if not .Editable}} disabled{{end}}>
       <label for="title">Title</label>
-      <input id="title" name="title" value="{{.Version.Title}}">
+      <input id="title" name="title" value="{{.Version.Title}}" {{noAutofill}}>
       <label for="slug">Slug</label>
-      <input id="slug" name="slug" value="{{.Version.Slug}}">
+      <input id="slug" name="slug" value="{{.Version.Slug}}" {{noAutofill}}>
       <label for="cover_date">Cover date</label>
-      <input id="cover_date" name="cover_date" value="{{.Version.CoverDate}}">
+      <input id="cover_date" name="cover_date" value="{{.Version.CoverDate}}" {{noAutofill}}>
       {{range .Fields}}
         {{$name := printf "field.%s" .Def.Name}}
         <label for="{{$name}}">{{.Def.Name}} <span class="muted">{{.Def.Type}}{{if .Def.Repeatable}}, one per line{{end}}{{if .Def.Required}}, required{{end}}</span></label>
         {{if eq .Control "block"}}
-          <textarea id="{{$name}}" name="{{$name}}">{{.Value}}</textarea>
+          <textarea id="{{$name}}" name="{{$name}}" {{noAutofill}}>{{.Value}}</textarea>
         {{else if eq .Control "lines"}}
-          <textarea id="{{$name}}" name="{{$name}}">{{.Lines}}</textarea>
+          <textarea id="{{$name}}" name="{{$name}}" {{noAutofill}}>{{.Lines}}</textarea>
         {{else if eq .Control "bool"}}
-          <select id="{{$name}}" name="{{$name}}">
+          <select id="{{$name}}" name="{{$name}}" {{noAutofill}}>
             <option value=""{{if eq .Value ""}} selected{{end}}>&mdash;</option>
             <option value="true"{{if eq .Value "true"}} selected{{end}}>true</option>
             <option value="false"{{if eq .Value "false"}} selected{{end}}>false</option>
           </select>
         {{else if eq .Control "int"}}
-          <input id="{{$name}}" type="number" step="1" name="{{$name}}" value="{{.Value}}">
+          <input id="{{$name}}" type="number" step="1" name="{{$name}}" value="{{.Value}}" {{noAutofill}}>
         {{else if eq .Control "date"}}
-          <input id="{{$name}}" name="{{$name}}" value="{{.Value}}" placeholder="2026-03-01">
+          <input id="{{$name}}" name="{{$name}}" value="{{.Value}}" placeholder="2026-03-01" {{noAutofill}}>
         {{else if eq .Control "url"}}
-          <input id="{{$name}}" type="url" name="{{$name}}" value="{{.Value}}">
+          <input id="{{$name}}" type="url" name="{{$name}}" value="{{.Value}}" {{noAutofill}}>
         {{else}}
-          <input id="{{$name}}" name="{{$name}}" value="{{.Value}}">
+          <input id="{{$name}}" name="{{$name}}" value="{{.Value}}" {{noAutofill}}>
         {{end}}
         {{with .Raw}}<p class="problem">this field holds something the schema does not describe: <span class="mono">{{.}}</span></p>{{end}}
       {{end}}
@@ -48,7 +48,7 @@ there, by name. */ -}}
   </form>
   {{if .Editable}}
     <form class="row" method="post" action="/documents/{{.Doc.UID}}/checkin">
-      <input class="inline" type="text" name="note" placeholder="check-in note">
+      <input class="inline" type="text" name="note" placeholder="check-in note" {{noAutofill}}>
       <button type="submit">Check in</button>
     </form>
   {{end}}

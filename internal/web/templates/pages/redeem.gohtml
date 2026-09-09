@@ -3,6 +3,12 @@
 <h1>Accept your invitation</h1>
 <p class="sub">Enter the address this invitation was sent to, your name, and a password. The address is asked for deliberately: it is what stops a forwarded invitation from working for whoever it was forwarded to.</p>
 {{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+{{- /* The second of the two forms that opt IN to autofill (invariant 23).
+       The justification: this is where somebody's account comes into existence,
+       so the address is their own and the password is one they are choosing
+       now -- "username" and "new-password" are exactly true here, and a manager
+       offering to generate and store the password is the outcome we want.
+       Contrast the invite form, where the address belongs to somebody else. */ -}}
 <div class="card" style="max-width:30rem">
   <form method="post" action="/invite">
     <input type="hidden" name="token" value="{{.Token}}">

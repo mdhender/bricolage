@@ -317,6 +317,25 @@ func form(r *http.Request) error {
 // function here that reached the service would be business logic in a
 // template, which is the shape this system was built to avoid.
 var funcs = template.FuncMap{
+	// noAutofill denies the browser and every password manager permission to
+	// fill a control, and it is what invariant 23 requires of every field that
+	// does not deliberately opt in.
+	//
+	// Four attributes rather than one, because "autocomplete" alone does not
+	// work. Chrome overrides it wherever its heuristics feel confident, and the
+	// managers ignore it by policy -- sites spent years using it to break them
+	// on purpose, so they stopped believing it. The three data- attributes are
+	// 1Password's, LastPass's and Dashlane's documented opt-outs, and they are
+	// the only vendor-specific markup in this UI. They look like cruft. They are
+	// not: deleting them puts a fill prompt back on top of the invite form, and
+	// 1Password's is a banner that has to be dismissed before anybody can type.
+	//
+	// It returns template.HTMLAttr because that is the type html/template trusts
+	// in attribute-name position; a plain string would be escaped into nonsense.
+	"noAutofill": func() template.HTMLAttr {
+		return `autocomplete="off" data-1p-ignore data-lpignore="true" data-form-type="other"`
+	},
+
 	// stamp renders an instant, or nothing at all for the zero time.
 	"stamp": func(t time.Time) string {
 		if t.IsZero() {

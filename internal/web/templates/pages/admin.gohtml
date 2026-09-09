@@ -82,19 +82,19 @@ it as a 403 page. */ -}}
       <p class="sub">Every scope box is optional; an empty one means "not constrained by this". A category is named by its path.</p>
       <form method="post" action="/admin/grants">
         <label for="role">Role slug</label>
-        <input id="role" name="role" required>
+        <input id="role" name="role" required {{noAutofill}}>
         <label for="privilege">Privilege</label>
-        <select id="privilege" name="privilege" required>
+        <select id="privilege" name="privilege" required {{noAutofill}}>
           {{range .Privileges}}<option value="{{.}}">{{.}}</option>{{end}}
         </select>
         <label for="grant-site">Site id</label>
-        <input id="grant-site" name="site">
+        <input id="grant-site" name="site" {{noAutofill}}>
         <label for="doc_kind">Document kind</label>
-        <input id="doc_kind" name="doc_kind" placeholder="story, media, template">
+        <input id="doc_kind" name="doc_kind" placeholder="story, media, template" {{noAutofill}}>
         <label for="grant-state">Workflow state</label>
-        <input id="grant-state" name="state">
+        <input id="grant-state" name="state" {{noAutofill}}>
         <label for="category">Category path</label>
-        <input id="category" name="category" placeholder="/features/film/">
+        <input id="category" name="category" placeholder="/features/film/" {{noAutofill}}>
         <label for="deep">Cover the subtree below it</label>
         <input id="deep" class="inline" type="checkbox" name="deep" checked>
         <p><button class="primary" type="submit">Grant</button></p>
@@ -105,9 +105,9 @@ it as a 403 page. */ -}}
       <h2>Give a user a role</h2>
       <form method="post" action="/admin/roles">
         <label for="user">User uid</label>
-        <input id="user" name="user" required>
+        <input id="user" name="user" required {{noAutofill}}>
         <label for="assign-role">Role slug</label>
-        <input id="assign-role" name="role" required>
+        <input id="assign-role" name="role" required {{noAutofill}}>
         <p><button type="submit">Assign</button></p>
       </form>
     </div>
