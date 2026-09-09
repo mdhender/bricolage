@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/mdhender/bricolage/internal/api"
+	"github.com/mdhender/bricolage/internal/edge"
 	"github.com/mdhender/bricolage/internal/render"
+	"github.com/mdhender/bricolage/internal/web"
 	"github.com/mdhender/bricolage/internal/web/devroutes"
 )
 
@@ -38,6 +40,13 @@ func (r Route) IsAPI() bool {
 // the JSON API nor a development affordance.
 func (r Route) IsPreview() bool {
 	return strings.Contains(r.Pattern, render.PreviewPrefix)
+}
+
+// IsUI reports whether this route is one of the HTML UI's. The three
+// predicates are what "cmsd routes" groups the table by, and a route that
+// answered to none of them would be one nobody had classified.
+func (r Route) IsUI() bool {
+	return !r.IsAPI() && !r.IsDevelopment() && !r.IsPreview() && r.Pattern != "GET /healthz"
 }
 
 // builder registers handlers on a mux and records what it registered.
@@ -97,6 +106,24 @@ func (s *Server) buildRoutes() (*http.ServeMux, []Route) {
 		// somebody looking for a typo in the path.
 		b.note = "preview"
 		api.RegisterPreview(b, deps)
+
+		// The HTML UI (PLAN.md M13). It is registered beside the API and
+		// under the same condition, because it is a second face on one
+		// application: the pages call the service methods the JSON routes
+		// serialise, and a server with a database has both or neither.
+		//
+		// Its routes sit at the root of the path space rather than under a
+		// prefix, which is what makes "/" the dashboard and "/documents/{uid}"
+		// a page somebody can be sent a link to. Nothing here is a catch-all:
+		// the UI registers "GET /{$}" and the paths it declares, so an
+		// unregistered path is still a 404 from the mux.
+		b.note = "html ui"
+		web.Register(b, web.Deps{
+			Service:     s.svc,
+			Environment: s.env,
+			Origin:      s.origin,
+			Logger:      s.log,
+		})
 		b.note = ""
 	}
 
@@ -128,7 +155,7 @@ func (s *Server) devDeps() devroutes.Deps {
 	// route issues is an ordinary session, so it gets an ordinary cookie
 	// (invariant 13).
 	deps.ValidateReturnTo = s.origin.ValidateReturnTo
-	deps.SetSessionCookie = api.SetSessionCookie
+	deps.SetSessionCookie = edge.SetSessionCookie
 
 	if s.svc == nil {
 		// Route-table mode: the pattern is declared so that "cmsd routes"

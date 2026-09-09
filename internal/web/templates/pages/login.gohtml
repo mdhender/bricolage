@@ -1,0 +1,16 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Sign in</h1>
+<p class="sub">This is the same login the JSON API performs; what differs is that the token is written to a cookie and never shown.</p>
+{{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+<div class="card" style="max-width:26rem">
+  <form method="post" action="/login">
+    <input type="hidden" name="returnTo" value="{{.ReturnTo}}">
+    <label for="email">Email</label>
+    <input id="email" type="email" name="email" value="{{.Email}}" autocomplete="username" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" type="password" name="password" autocomplete="current-password" required>
+    <p><button class="primary" type="submit">Sign in</button></p>
+  </form>
+</div>
+{{end}}

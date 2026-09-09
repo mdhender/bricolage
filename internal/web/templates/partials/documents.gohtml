@@ -1,0 +1,25 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "documentrows"}}
+<table>
+  <thead>
+    <tr><th>Title</th><th>State</th><th>Assigned</th><th>Due</th><th>Updated</th></tr>
+  </thead>
+  <tbody>
+    {{range .}}
+      <tr>
+        <td>
+          <a href="/documents/{{.Document.UID}}">{{with .Version.Title}}{{.}}{{else}}(untitled){{end}}</a>
+          <br><span class="muted mono">{{.Document.UID}}</span>
+          {{if .Locked}}<span class="pill locked">checked out by {{.LockedBy}}</span>{{end}}
+        </td>
+        <td><span class="pill state">{{.Document.State}}</span></td>
+        <td>{{with .Assignee}}{{.}}{{else}}<span class="empty">nobody</span>{{end}}</td>
+        <td>{{if zero .Document.DueAt}}<span class="empty">&mdash;</span>{{else}}{{stamp .Document.DueAt}}{{if .Overdue}} <span class="pill late">late</span>{{end}}{{end}}</td>
+        <td>{{stamp .Document.UpdatedAt}}</td>
+      </tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">nothing here</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

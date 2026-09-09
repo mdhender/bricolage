@@ -1,0 +1,38 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "layout" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} &middot; bricolage</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+{{if .Development}}<div class="banner">development environment &mdash; the <code>/__development/*</code> routes are registered on this server</div>{{end}}
+<header class="top">
+  <nav>
+    <a class="brand" href="/">bricolage</a>
+    {{if .SignedIn}}
+      <a href="/queues">Queues</a>
+      <a href="/documents">Documents</a>
+      <a href="/jobs">Jobs</a>
+      <a href="/admin">Admin</a>
+      <a href="/notifications">Inbox{{if .Unread}} <span class="badge">{{.Unread}}</span>{{end}}</a>
+      <span class="spacer"></span>
+      <span class="muted">{{with .User.Name}}{{.}}{{else}}{{.User.Email}}{{end}}</span>
+      <form method="post" action="/logout"><button type="submit">Sign out</button></form>
+    {{else}}
+      <span class="spacer"></span>
+      <a href="/login">Sign in</a>
+    {{end}}
+  </nav>
+</header>
+<main>
+{{template "flash" .}}
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{- end}}

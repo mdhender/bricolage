@@ -1,0 +1,29 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Preview</h1>
+<p class="sub">
+  <a href="/documents/{{.Result.View.Document.UID}}">back to the document</a> &middot;
+  {{.Result.Mode}} &middot; {{.Result.Channel.Name}}
+</p>
+<div class="card">
+  {{if .Path}}
+    <p><a class="button" href="{{.Path}}">Open the rendered page</a> <span class="muted mono">{{.Path}}</span></p>
+    <p class="muted">{{.Result.Entry.Bytes}} bytes, sha256 {{.Result.Entry.Checksum}}</p>
+  {{end}}
+  {{if eq .Result.Mode "validate"}}
+    {{if .Result.Valid}}
+      <p class="notice">the template compiles</p>
+    {{else}}
+      <p class="problem">{{with .Result.Problem}}{{.Template}}:{{.Line}}: {{.Err}}{{end}}</p>
+    {{end}}
+  {{end}}
+  <table>
+    <tbody>
+      <tr><th>URI</th><td class="mono">{{.Result.URI}}</td></tr>
+      <tr><th>URL</th><td class="mono">{{.Result.URL}}</td></tr>
+      <tr><th>Template</th><td class="mono">{{.Result.Template}}</td></tr>
+      <tr><th>Searched</th><td>{{range .Result.Searched}}<div class="mono">{{.}}</div>{{end}}</td></tr>
+    </tbody>
+  </table>
+</div>
+{{end}}

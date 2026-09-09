@@ -1,0 +1,41 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Dashboard</h1>
+<p class="sub">The saved queues are configuration rather than schema, and "mine" is resolved for whoever is asking.</p>
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>Queues</h2>
+      <table>
+        <thead><tr><th>Queue</th><th>Waiting</th></tr></thead>
+        <tbody>
+          {{range .Queues}}
+            <tr>
+              <td><a href="/queues/{{.Queue.Slug}}">{{.Queue.Name}}</a><br><span class="muted">{{.Queue.Description}}</span></td>
+              <td>{{if .Err}}<span class="problem">{{.Err}}</span>{{else}}{{.Count}}{{end}}</td>
+            </tr>
+          {{else}}
+            <tr><td colspan="2" class="empty">this server was started with no saved queues</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    <div class="card">
+      <h2>Recently updated</h2>
+      {{template "documentrows" .Recent}}
+      <p><a href="/documents">All documents</a> &middot; <a href="/documents/new">New document</a></p>
+    </div>
+  </div>
+  <div>
+    <div class="card">
+      <h2>Unread notifications</h2>
+      {{range .Inbox}}
+        <p>{{stamp .OccurredAt}} <span class="mono">{{.EventType}}</span>{{with .RuleName}}<br><span class="muted">by rule {{.}}</span>{{end}}</p>
+      {{else}}
+        <p class="empty">nothing unread</p>
+      {{end}}
+      <p><a href="/notifications">Inbox</a></p>
+    </div>
+  </div>
+</div>
+{{end}}

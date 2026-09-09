@@ -1,0 +1,20 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Notifications</h1>
+<p class="sub">Your own inbox. There is no screen here for anybody else's, and no privilege that would open one.</p>
+<div class="card">
+  <p class="row">
+    <a class="button" href="/notifications">Everything</a>
+    <a class="button" href="/notifications?unread=1">Unread only</a>
+    <span class="muted">{{.Unread}} unread</span>
+  </p>
+  <table>
+    <thead><tr><th>When</th><th>Event</th><th>Subject</th><th></th></tr></thead>
+    <tbody>
+      {{range .Notifications}}{{template "notification" .}}{{else}}
+        <tr><td colspan="4" class="empty">nothing here{{if .UnreadOnly}} unread{{end}}</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

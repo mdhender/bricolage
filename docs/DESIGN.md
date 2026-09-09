@@ -146,7 +146,8 @@ internal/
   events/           event recording, alert rule evaluation, notifications
   render/           template lookup + execution, and the preview scratch tree
   api/              JSON REST handlers, request/response types
-  web/              HTMX handlers and html/template files
+  web/              HTMX handlers, html/template files, and the UI's static assets
+  edge/             what both transports must agree on: the status mapping, the session cookie
   web/devroutes/    the `/__development/*` handlers; registered only in development
   server/           the composition root: the route table, and the one shutdown path
   buildenv/         the build/environment interlock (§14); the only tagged files
@@ -185,6 +186,20 @@ exists so that `api`, `web`, `web/devroutes` and `server` can agree on those
 values without importing one another, and so that the client address is
 resolved in exactly one middleware — a second parse downstream is a second
 policy, and the two disagree in only one direction.
+
+`edge` is a leaf beside `reqctx` and exists for the same reason. Two rules in
+this document are written as "one function": mapping a domain error to an HTTP
+status happens only at the transport edge, in one place (§14), and the session
+cookie is written by one path in the process, never two (§12, invariant 13).
+Until M13 there was one transport and both held by construction. With two, a
+copy of either in `internal/web` would be a second policy — two functions that
+disagree about what "conflict" means, or a second cookie that is missing
+`Secure` — and the alternative, `web` importing `api`, is the sibling
+dependency `reqctx` exists to avoid. So both live in a leaf that imports the
+standard library, `domain`, and `config`, and holds nothing else. It renders
+nothing: the problem document is `api`'s, because RFC 9457 is the JSON API's
+contract, and the HTML error page is `web`'s. What is shared is the decision,
+not the presentation.
 
 `server` sits above the transports and holds no business logic. It exists
 because two things have nowhere else to live. The first is the route table:
@@ -2007,6 +2022,57 @@ same `refusals` list, so a client parses one shape whichever answer it gets.
 Requests carry `Idempotency-Key` on `POST`s that create jobs; store the key with
 the created resource and return the same result on replay.
 
+### The HTML UI
+
+`internal/web` serves the same application at the root of the path space:
+`/` is the dashboard, `/documents/{uid}` is a page somebody can be sent a link
+to, and `/login` is the form. It is registered beside the API and under the
+same condition — a server with a database has both or neither — and it declares
+`GET /{$}` rather than `GET /`, so an unregistered path is still a `404` from
+the mux instead of a dashboard drawn for a typo.
+
+Three things about its shape are decisions rather than details.
+
+**A form may only `GET` or `POST`, so the UI spells with a path what the API
+spells with a method.** `POST .../checkout/cancel` is the API's
+`DELETE .../checkout`, `POST .../approvals/withdraw` is
+`DELETE .../approvals/current`, and `POST .../due` is `PUT .../due`. The
+alternative is a hidden `_method` field, which is a second way of saying what
+the method already says and a second thing to get wrong. What has to match is
+the operation, and `docs/PLAN.md` M13 acceptance 5 is asserted as exactly that:
+every write the UI offers names the API route that performs the same thing, and
+a screen with no counterpart fails the build.
+
+**Every screen works with JavaScript turned off, and HTMX enhances it.** A form
+posts, the server answers `303`, and the browser follows it; the same handler,
+asked by HTMX, returns the fragment instead — the action bar, the discussion,
+the approvals panel, one notification row. One handler and two renderings of
+one answer. A UI that only worked the other way would be a UI that could not be
+tested without a browser, and the tests that matter here are the ones that
+forge a `POST` nobody's browser would send.
+
+**The UI's own templates are embedded and parsed once.** §14's "re-read from
+disk per request in development" is about the content template tree, which
+editors change while the system runs and `internal/render` reloads. These are
+the program's own screens; a UI that could be changed by editing a file beside
+the binary is a UI whose behaviour depends on what is in a directory nobody
+deployed. The stylesheet and the HTMX runtime are embedded beside them and
+served from `/static/`, so the UI needs no CDN and works on a machine with no
+route to the internet. HTMX is vendored rather than fetched: it is one
+minified file under a Zero-Clause BSD licence, kept beside its licence text
+(AGENTS.md, "Code conventions"), and a UI whose interactivity depends on a
+third party being reachable is a UI that stops working on the day they are
+not.
+
+The action bar is the milestone's whole point and is described where the rule
+lives: `Available` and `Do` share one check (§6.2), the bar is `Available`
+rendered, and a refused move is drawn disabled with its reason and the name of
+the guard that refused rather than left out. A forged `POST` for one is refused
+inside the transaction — a `409` when a guard or the state machine refused,
+a `403` when the caller simply may not — which is the same answer the JSON
+route gives, because both ask the same service method and map the result
+through the same function.
+
 ## 13. Persistence rules
 
 These are not suggestions. SQLite punishes casual concurrency, and it is
@@ -2177,9 +2243,13 @@ It governs:
 |---|---|---|
 | `/__development/*` routes | registered (§11) | never registered |
 | Log format | console, human-readable | JSON |
-| Templates | re-read from disk per request | parsed once at startup |
+| Content templates | re-read from disk per request | parsed once at startup |
 | Error responses | include the underlying detail | generic, with a request id |
 | Startup banner | prints the loud warning | prints `environment=production` |
+
+The template row is the content tree under `--templates`, which is edited by
+the people using the system. The UI's own screens are embedded in the binary
+and parsed once in both environments (§12, "The HTML UI").
 
 `production` is also the right value for staging and for CI. A third value was
 considered and rejected: more states mean more combinations nobody tests, and

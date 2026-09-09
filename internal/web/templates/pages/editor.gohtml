@@ -1,0 +1,56 @@
+{{- /* Copyright (c) 2026 Michael D Henderson.
+
+The boxes are the element type's schema, so a draft is written against the
+fields it will be checked in against. Content is validated on check-in and
+nowhere else, which is why an empty required field is saved here and refused
+there, by name. */ -}}
+{{define "content"}}
+<h1>{{with .Version.Title}}{{.}}{{else}}(untitled){{end}}</h1>
+<p class="sub"><a href="/documents/{{.Doc.UID}}">back to the document</a> &middot; version {{.Version.Number}} &middot; {{.Doc.ElementTypeKey}}</p>
+{{if not .Editable}}<p class="problem">{{.Why}}</p>{{end}}
+<div class="card">
+  <form method="post" action="/documents/{{.Doc.UID}}/edit">
+    <fieldset style="border:0;padding:0;margin:0"{{if not .Editable}} disabled{{end}}>
+      <label for="title">Title</label>
+      <input id="title" name="title" value="{{.Version.Title}}">
+      <label for="slug">Slug</label>
+      <input id="slug" name="slug" value="{{.Version.Slug}}">
+      <label for="cover_date">Cover date</label>
+      <input id="cover_date" name="cover_date" value="{{.Version.CoverDate}}">
+      {{range .Fields}}
+        {{$name := printf "field.%s" .Def.Name}}
+        <label for="{{$name}}">{{.Def.Name}} <span class="muted">{{.Def.Type}}{{if .Def.Repeatable}}, one per line{{end}}{{if .Def.Required}}, required{{end}}</span></label>
+        {{if eq .Control "block"}}
+          <textarea id="{{$name}}" name="{{$name}}">{{.Value}}</textarea>
+        {{else if eq .Control "lines"}}
+          <textarea id="{{$name}}" name="{{$name}}">{{.Lines}}</textarea>
+        {{else if eq .Control "bool"}}
+          <select id="{{$name}}" name="{{$name}}">
+            <option value=""{{if eq .Value ""}} selected{{end}}>&mdash;</option>
+            <option value="true"{{if eq .Value "true"}} selected{{end}}>true</option>
+            <option value="false"{{if eq .Value "false"}} selected{{end}}>false</option>
+          </select>
+        {{else if eq .Control "int"}}
+          <input id="{{$name}}" type="number" step="1" name="{{$name}}" value="{{.Value}}">
+        {{else if eq .Control "date"}}
+          <input id="{{$name}}" name="{{$name}}" value="{{.Value}}" placeholder="2026-03-01">
+        {{else if eq .Control "url"}}
+          <input id="{{$name}}" type="url" name="{{$name}}" value="{{.Value}}">
+        {{else}}
+          <input id="{{$name}}" name="{{$name}}" value="{{.Value}}">
+        {{end}}
+        {{with .Raw}}<p class="problem">this field holds something the schema does not describe: <span class="mono">{{.}}</span></p>{{end}}
+      {{end}}
+      <p class="row">
+        <button class="primary" type="submit">Save draft</button>
+      </p>
+    </fieldset>
+  </form>
+  {{if .Editable}}
+    <form class="row" method="post" action="/documents/{{.Doc.UID}}/checkin">
+      <input class="inline" type="text" name="note" placeholder="check-in note">
+      <button type="submit">Check in</button>
+    </form>
+  {{end}}
+</div>
+{{end}}

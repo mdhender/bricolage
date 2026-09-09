@@ -1,0 +1,30 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Jobs</h1>
+<p class="sub">The queue publishing schedules work on. There is deliberately no button here that creates a job: work is scheduled by the operation that needs it.</p>
+<div class="card">
+  <p class="row">
+    <a class="button" href="/jobs">Everything</a>
+    <a class="button" href="/jobs?pending=1">Pending</a>
+    <a class="button" href="/jobs?failed=1">Failed</a>
+  </p>
+  <table>
+    <thead><tr><th>Job</th><th>Kind</th><th>Status</th><th>Scheduled</th><th>Attempts</th><th>Last error</th><th></th></tr></thead>
+    <tbody>
+      {{range .Jobs}}
+        <tr>
+          <td class="mono">{{.Job.UID}}</td>
+          <td>{{.Job.Kind}}</td>
+          <td><span class="pill">{{.Status}}</span></td>
+          <td>{{stamp .Job.ScheduledFor}}</td>
+          <td>{{.Job.Attempts}} of {{.Job.MaxAttempts}}</td>
+          <td>{{.Job.LastError}}</td>
+          <td>{{if .Retryable}}<form class="inline-form" method="post" action="/jobs/{{.Job.UID}}/retry"><button type="submit">Retry</button></form>{{end}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="7" class="empty">the queue is empty</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

@@ -1,0 +1,23 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "approvals"}}
+<div id="approvals">
+  {{if .Err}}
+    <p class="problem">{{.Err}}</p>
+  {{else}}
+    <p class="muted">version {{.Version}} in <span class="pill state">{{.State}}</span>: {{.Given}} of {{.Required}}</p>
+    {{if .Approvals}}
+      <ul>
+        {{range .Approvals}}<li>{{.Who}} <span class="muted">{{stamp .Approval.CreatedAt}} in {{.Approval.State}}</span></li>{{end}}
+      </ul>
+    {{else}}
+      <p class="empty">nobody has approved this version</p>
+    {{end}}
+    <form class="inline-form" method="post"
+          action="/documents/{{.DocumentUID}}/approvals{{if .Mine}}/withdraw{{end}}"
+          hx-post="/documents/{{.DocumentUID}}/approvals{{if .Mine}}/withdraw{{end}}"
+          hx-target="#approvals" hx-swap="outerHTML">
+      <button type="submit">{{if .Mine}}Withdraw my approval{{else}}Approve{{end}}</button>
+    </form>
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,37 @@
+{{- /* Copyright (c) 2026 Michael D Henderson.
+
+The action bar is workflow.Available, rendered (invariant 5, PLAN.md M13
+acceptance 2). Every declared move out of the current state is drawn: the
+permitted ones as buttons, the refused ones disabled with the reason and, when
+a guard refused rather than a privilege, the guard's name. Nothing is left out.
+
+A transition that declares note_required comes back refused, because Available
+is asked before anybody has typed one. That refusal is a prompt rather than a
+verdict, so the box is offered and the button stays live; if something else
+also refuses, the POST answers 409 and says which guard. */ -}}
+{{define "actions"}}
+<div class="actions" id="actions">
+  {{with .Err}}<p class="problem">{{.}}</p>{{end}}
+  <p class="row">State <span class="pill state">{{.State}}</span></p>
+  {{range .Allowed}}
+    {{$prompt := and .NeedsNote (or .Permitted (eq (printf "%s" .Guard) "note_required"))}}
+    <div class="action">
+      {{if or .Permitted $prompt}}
+        <form class="inline-form row" method="post" action="/documents/{{$.DocumentUID}}/transitions"
+              hx-post="/documents/{{$.DocumentUID}}/transitions" hx-target="#actions" hx-swap="outerHTML">
+          <input type="hidden" name="to" value="{{.Transition.To}}">
+          {{if .NeedsNote}}<input class="inline" type="text" name="note" placeholder="note" required>{{end}}
+          <button class="primary" type="submit">{{.Transition.Name}}</button>
+        </form>
+      {{else}}
+        <button type="button" disabled>{{.Transition.Name}}</button>
+        <span class="why">{{.Reason}}</span>
+        {{with .Guard}}<span class="guard">{{.}}</span>{{end}}
+      {{end}}
+      <span class="muted">&rarr; {{.Transition.To}}, needs {{.Transition.Privilege}}</span>
+    </div>
+  {{else}}
+    <p class="empty">no transitions are declared out of this state</p>
+  {{end}}
+</div>
+{{end}}

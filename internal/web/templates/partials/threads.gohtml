@@ -1,0 +1,49 @@
+{{- /* Copyright (c) 2026 Michael D Henderson.
+
+Resolution is a property of the thread, not of each message in it: only a root
+carries a resolved stamp, and replying to a reply joins that reply's thread
+(DESIGN.md 5.5). */ -}}
+{{define "threads"}}
+<div id="threads">
+  {{with .Err}}<p class="problem">{{.}}</p>{{end}}
+  <p class="muted">{{.Open}} unresolved</p>
+  {{range .Threads}}
+    <div class="thread">
+      <p class="who">
+        {{.Author}} &middot; {{stamp .Comment.CreatedAt}}
+        {{with .Comment.VersionNumber}}&middot; version {{.}}{{end}}
+        {{if .Resolved}}<span class="pill resolved">resolved by {{.ResolvedBy}}</span>{{else}}<span class="pill open">open</span>{{end}}
+      </p>
+      <p class="body">{{.Comment.Body}}</p>
+      {{range .Replies}}
+        <div class="reply">
+          <p class="who">{{.Author}} &middot; {{stamp .Comment.CreatedAt}}</p>
+          <p class="body">{{.Comment.Body}}</p>
+        </div>
+      {{end}}
+      <div class="row">
+        {{if not .Resolved}}
+          <form class="inline-form" method="post" action="/comments/{{.Comment.UID}}/resolution"
+                hx-post="/comments/{{.Comment.UID}}/resolution" hx-target="#threads" hx-swap="outerHTML">
+            <button type="submit">Resolve</button>
+          </form>
+        {{end}}
+        <form class="inline-form row" method="post" action="/documents/{{$.DocumentUID}}/comments"
+              hx-post="/documents/{{$.DocumentUID}}/comments" hx-target="#threads" hx-swap="outerHTML">
+          <input type="hidden" name="reply_to" value="{{.Comment.UID}}">
+          <input class="inline" type="text" name="body" placeholder="reply" required>
+          <button type="submit">Reply</button>
+        </form>
+      </div>
+    </div>
+  {{else}}
+    <p class="empty">nobody has commented on this document</p>
+  {{end}}
+  <form method="post" action="/documents/{{.DocumentUID}}/comments"
+        hx-post="/documents/{{.DocumentUID}}/comments" hx-target="#threads" hx-swap="outerHTML">
+    <label for="new-comment">New thread</label>
+    <textarea id="new-comment" name="body" required></textarea>
+    <p><button class="primary" type="submit">Comment</button></p>
+  </form>
+</div>
+{{end}}

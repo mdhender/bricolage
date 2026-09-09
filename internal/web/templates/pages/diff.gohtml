@@ -1,0 +1,22 @@
+{{- /* Copyright (c) 2026 Michael D Henderson.
+
+The diff is word-level and the whitespace shown is the newer text's, which is
+what domain.Diff produces. An unchanged field is still listed: "compared and
+found equal" is a different answer from "not looked at". */ -}}
+{{define "content"}}
+<h1>Diff</h1>
+<p class="sub">
+  <a href="/documents/{{.Doc.UID}}">back to the document</a> &middot;
+  version {{.From.Number}} &rarr; version {{.To.Number}}
+</p>
+<div class="card diff">
+  {{range .Fields}}
+    <div class="field">
+      <h2>{{.Field}} {{if not .Changed}}<span class="pill">unchanged</span>{{end}}</h2>
+      <p>{{range .Ops}}{{if eq .Kind 1}}<del>{{.Text}}</del>{{else if eq .Kind 2}}<ins>{{.Text}}</ins>{{else}}{{.Text}}{{end}}{{end}}</p>
+    </div>
+  {{else}}
+    <p class="empty">nothing to compare</p>
+  {{end}}
+</div>
+{{end}}

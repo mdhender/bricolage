@@ -1,0 +1,108 @@
+{{- /* Copyright (c) 2026 Michael D Henderson.
+
+Nobody may grant a privilege they do not hold over that scope, and handing
+somebody a role hands them every grant it carries (invariant 12). Both
+refusals are the service's; this screen states neither, and a refusal reaches
+it as a 403 page. */ -}}
+{{define "content"}}
+<h1>Administration</h1>
+<p class="sub">The processes documents move through, the structure they are filed against, and the two writes that hand out access.</p>
+{{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>Workflows</h2>
+      <p class="sub">The state machine is written down once, in the migration that seeds it. There is no screen that edits it.</p>
+      {{range .Workflows}}
+        <h3>{{.Name}} <span class="muted mono">{{.Kind}}{{if .SiteID}} &middot; site {{.SiteID}}{{end}}</span></h3>
+        <p class="muted">starts in <span class="pill state">{{.InitialState}}</span></p>
+        <table>
+          <thead><tr><th>Move</th><th>From</th><th>To</th><th>Needs</th><th>Guards</th><th>Effects</th></tr></thead>
+          <tbody>
+            {{range .Transitions}}
+              <tr>
+                <td>{{.Name}}</td><td>{{.From}}</td><td>{{.To}}</td><td>{{.Privilege}}</td>
+                <td class="mono">{{range .GuardNames}}{{.}} {{end}}</td>
+                <td class="mono">{{range .EffectNames}}{{.}} {{end}}</td>
+              </tr>
+            {{end}}
+          </tbody>
+        </table>
+        <table>
+          <thead><tr><th>State</th><th>Publishable</th><th>Terminal</th><th>Approvals</th></tr></thead>
+          <tbody>
+            {{range .States}}
+              <tr><td>{{.Name}} <span class="muted mono">{{.Slug}}</span></td><td>{{.Publishable}}</td><td>{{.Terminal}}</td><td>{{.RequiredApprovals}}</td></tr>
+            {{end}}
+          </tbody>
+        </table>
+      {{else}}
+        <p class="empty">no workflows are configured</p>
+      {{end}}
+    </div>
+
+    <div class="card">
+      <h2>Structure</h2>
+      <h3>Sites</h3>
+      <table>
+        <thead><tr><th>Id</th><th>Name</th><th>Domain</th></tr></thead>
+        <tbody>
+          {{range .Sites}}<tr><td>{{.ID}}</td><td>{{.Name}}</td><td class="mono">{{.Domain}}</td></tr>{{else}}<tr><td colspan="3" class="empty">no sites</td></tr>{{end}}
+        </tbody>
+      </table>
+      <h3>Output channels</h3>
+      <table>
+        <thead><tr><th>Name</th><th>URI format</th><th>File</th></tr></thead>
+        <tbody>
+          {{range .Channels}}<tr><td>{{.Name}}</td><td class="mono">{{.URIFormat}}</td><td class="mono">{{.Filename}}.{{.FileExt}}</td></tr>{{else}}<tr><td colspan="3" class="empty">no output channels</td></tr>{{end}}
+        </tbody>
+      </table>
+      <h3>Element types</h3>
+      <table>
+        <thead><tr><th>Key</th><th>Name</th><th>Kind</th><th>Fixed URI</th></tr></thead>
+        <tbody>
+          {{range .ElementTypes}}<tr><td class="mono">{{.KeyName}}</td><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.FixedURI}}</td></tr>{{else}}<tr><td colspan="4" class="empty">no element types</td></tr>{{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Grant a privilege</h2>
+      <p class="sub">Every scope box is optional; an empty one means "not constrained by this". A category is named by its path.</p>
+      <form method="post" action="/admin/grants">
+        <label for="role">Role slug</label>
+        <input id="role" name="role" required>
+        <label for="privilege">Privilege</label>
+        <select id="privilege" name="privilege" required>
+          {{range .Privileges}}<option value="{{.}}">{{.}}</option>{{end}}
+        </select>
+        <label for="grant-site">Site id</label>
+        <input id="grant-site" name="site">
+        <label for="doc_kind">Document kind</label>
+        <input id="doc_kind" name="doc_kind" placeholder="story, media, template">
+        <label for="grant-state">Workflow state</label>
+        <input id="grant-state" name="state">
+        <label for="category">Category path</label>
+        <input id="category" name="category" placeholder="/features/film/">
+        <label for="deep">Cover the subtree below it</label>
+        <input id="deep" class="inline" type="checkbox" name="deep" checked>
+        <p><button class="primary" type="submit">Grant</button></p>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Give a user a role</h2>
+      <form method="post" action="/admin/roles">
+        <label for="user">User uid</label>
+        <input id="user" name="user" required>
+        <label for="assign-role">Role slug</label>
+        <input id="assign-role" name="role" required>
+        <p><button type="submit">Assign</button></p>
+      </form>
+    </div>
+  </div>
+</div>
+{{end}}

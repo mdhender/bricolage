@@ -1,0 +1,6 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>{{.Queue.Name}}</h1>
+<p class="sub">{{.Queue.Description}}</p>
+<div class="card">{{template "documentrows" .Documents}}</div>
+{{end}}

@@ -1,0 +1,46 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>History</h1>
+<p class="sub"><a href="/documents/{{.Doc.UID}}">back to the document</a> &middot; <span class="mono">{{.Doc.UID}}</span></p>
+<div class="card">
+  <h2>Versions</h2>
+  <table>
+    <thead><tr><th>#</th><th>Title</th><th>Author</th><th>Checked in</th><th>Note</th><th></th></tr></thead>
+    <tbody>
+      {{range .Versions}}
+        <tr>
+          <td>{{.Version.Number}}</td>
+          <td>{{.Version.Title}}
+            {{if .Open}}<span class="pill open">working draft</span>{{end}}
+            {{if .Live}}<span class="pill resolved">live</span>{{end}}</td>
+          <td>{{.Author}}</td>
+          <td>{{if .Open}}<span class="empty">&mdash;</span>{{else}}{{stamp .Version.CheckedInAt}}{{end}}</td>
+          <td>{{.Version.Note}}</td>
+          <td>{{if gt .Version.Number 1}}<a href="/documents/{{$.Doc.UID}}/diff?from={{sub .Version.Number 1}}&amp;to={{.Version.Number}}">diff from {{sub .Version.Number 1}}</a>{{end}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="6" class="empty">no versions</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+<div class="card">
+  <h2>Events</h2>
+  <p class="sub">Every state-changing operation writes one, carrying enough to reconstruct what happened (invariant 7). The names come from the vocabulary in code, not from a query.</p>
+  <table>
+    <thead><tr><th>When</th><th>What</th><th>Who</th><th>Payload</th></tr></thead>
+    <tbody>
+      {{range .Events}}
+        <tr>
+          <td>{{stamp .Event.OccurredAt}}</td>
+          <td>{{.Name}}<br><span class="muted mono">{{.Event.Type}}</span></td>
+          <td>{{with .Actor}}{{.}}{{else}}<span class="empty">the system</span>{{end}}</td>
+          <td>{{$payload := .Event.Payload}}{{range keys $payload}}<span class="mono">{{.}}</span>={{value $payload .}} {{end}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="4" class="empty">no events</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}

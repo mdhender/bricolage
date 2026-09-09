@@ -108,7 +108,7 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M12 are complete and M13 has not started. `cmsdb` can `init`,
+M0 through M13 are complete; the milestones are done. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
@@ -116,7 +116,8 @@ M0 through M12 are complete and M13 has not started. `cmsdb` can `init`,
 history, transition, workflow, assignment, due-date, queue, job, site,
 category, output-channel, element-type, filing, URI, preview, publication,
 resource, comment, approval, alert-rule, and notification routes plus
-`/healthz` and the `/preview/` mount. It also hosts the
+`/healthz`, the `/preview/` mount, and the HTML UI at the root of the path
+space. It also hosts the
 background job workers, behind `--workers N` (default 1, `0` to disable), and
 the alert dispatcher, which always runs; both are handed to `internal/server`
 as one `server.Backgrounds` and stopped by it. It takes the optional
@@ -363,10 +364,32 @@ Writing or reading a rule needs `create` over the system subject, as an element
 type does; an inbox is the caller's own and needs no privilege, because there
 is no route to anybody else's.
 
-`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render,publish}`
-are real. `internal/web` is still a `doc.go` stating the package's
-responsibility and permitted imports — read that doc before adding the first
-real file to it.
+`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render,publish,web,edge}`
+are real.
+
+`internal/web` is the HTML UI (M13): a page per screen, drawn by calling the
+same service methods `internal/api` serialises. Its templates, its stylesheet,
+and the vendored HTMX runtime are embedded and parsed once — `DESIGN.md` §14's
+"templates reload in development" is the *content* tree under `--templates`,
+not these. Every screen works with JavaScript off (a form posts, the server
+answers 303) and HTMX turns the same POST into a fragment swap; a form may only
+GET or POST, so the UI spells `POST .../approvals/withdraw` what the API spells
+`DELETE .../approvals/current`. Every write it offers is mapped to the API
+route that performs the same thing, in a table a test in `internal/server`
+checks both ways: the UI performs no operation `earl` cannot.
+
+The action bar is `workflow.Available`, rendered, with refused moves drawn
+disabled beside their reason and the guard that refused — never left out. A
+forged POST is refused inside the transaction, 409 for a guard or an undeclared
+move and 403 for a privilege, which is the same answer the JSON route gives
+because both go through `service.Transition` and `edge.StatusFor`.
+
+`internal/edge` is the leaf both transports share: `StatusFor`, the one
+domain-error-to-HTTP-status table, and `SetSessionCookie`/`ClearSessionCookie`,
+the one cookie-writing path (invariant 13). It exists because `DESIGN.md` says
+each of those is "one function" and a second transport would otherwise have
+made two — and because `web` importing `api` is the sibling dependency
+`internal/reqctx` exists to avoid.
 
 `--db` names a **directory** that must already exist; the database inside it is
 always `cms.db`. Only `cmsdb init` creates a database and only `cmsdb` migrates

@@ -1,0 +1,15 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>{{.Title}}</h1>
+<p class="sub">{{.Status}} &middot; <span class="mono">{{.Kind}}</span></p>
+<div class="card">
+  <p>{{.Detail}}</p>
+  {{with .Guard}}<p class="muted">the guard that refused: <span class="mono">{{.}}</span></p>{{end}}
+  {{with .Fields}}
+    <h2>Fields</h2>
+    <ul>{{range .}}<li><span class="mono">{{.Field}}</span> {{.Message}}</li>{{end}}</ul>
+  {{end}}
+  {{with .RequestID}}<p class="muted">request <span class="mono">{{.}}</span></p>{{end}}
+</div>
+<p><a class="button" href="/">Back to the dashboard</a></p>
+{{end}}

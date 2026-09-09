@@ -1,0 +1,28 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>New document</h1>
+<p class="sub">Creating a document is not a transition: it starts in its workflow's initial state rather than moving into one.</p>
+<div class="card">
+  <form method="post" action="/documents">
+    <label for="site">Site</label>
+    <select id="site" name="site" required>
+      {{range .Sites}}<option value="{{.ID}}">{{.Name}} ({{.Domain}})</option>{{end}}
+    </select>
+    <label for="kind">Kind</label>
+    <select id="kind" name="kind" required>
+      {{range .Kinds}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+    <label for="element_type">Element type</label>
+    <select id="element_type" name="element_type" required>
+      {{range .ElementTypes}}<option value="{{.KeyName}}">{{.Name}} ({{.KeyName}})</option>{{end}}
+    </select>
+    <label for="title">Title</label>
+    <input id="title" name="title" required>
+    <label for="slug">Slug</label>
+    <input id="slug" name="slug">
+    <label for="cover_date">Cover date</label>
+    <input id="cover_date" name="cover_date" placeholder="2026-03-01">
+    <p><button class="primary" type="submit">Create</button></p>
+  </form>
+</div>
+{{end}}

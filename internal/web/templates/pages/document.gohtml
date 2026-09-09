@@ -1,0 +1,156 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>{{with .Version.Title}}{{.}}{{else}}(untitled){{end}}</h1>
+<p class="sub">
+  <span class="mono">{{.Doc.UID}}</span> &middot; {{.Doc.Kind}}/{{.Doc.ElementTypeKey}} &middot;
+  version {{.Version.Number}}{{if zero .Version.CheckedInAt}} <span class="pill open">working draft</span>{{else}} <span class="pill resolved">checked in {{stamp .Version.CheckedInAt}}</span>{{end}}
+  {{if .Locked}}<span class="pill locked">checked out by {{.LockedBy}}</span>{{end}}
+</p>
+
+<div class="grid">
+  <div>
+    <div class="card">
+      <h2>Content</h2>
+      <table>
+        <tbody>
+          <tr><th>slug</th><td>{{with .Version.Slug}}{{.}}{{else}}<span class="empty">&mdash;</span>{{end}}</td></tr>
+          <tr><th>cover date</th><td>{{with .Version.CoverDate}}{{.}}{{else}}<span class="empty">&mdash;</span>{{end}}</td></tr>
+          {{range .Content}}<tr><th>{{.Name}}</th><td><pre>{{.Value}}</pre></td></tr>{{end}}
+        </tbody>
+      </table>
+      <p class="row">
+        <a class="button" href="/documents/{{.Doc.UID}}/edit">Editor</a>
+        <a class="button" href="/documents/{{.Doc.UID}}/history">History</a>
+        {{if .Mine}}
+          <form class="inline-form" method="post" action="/documents/{{.Doc.UID}}/checkout/cancel"><button type="submit">Cancel checkout</button></form>
+          <form class="inline-form" method="post" action="/documents/{{.Doc.UID}}/revert"><button type="submit">Revert draft</button></form>
+        {{else if not .Locked}}
+          <form class="inline-form" method="post" action="/documents/{{.Doc.UID}}/checkout"><button type="submit">Check out</button></form>
+        {{end}}
+      </p>
+      {{if .Mine}}
+        <form class="row" method="post" action="/documents/{{.Doc.UID}}/checkin">
+          <input class="inline" type="text" name="note" placeholder="check-in note">
+          <button class="primary" type="submit">Check in</button>
+        </form>
+      {{end}}
+    </div>
+
+    <div class="card" id="comments">
+      <h2>Discussion</h2>
+      {{template "threads" .Threads}}
+    </div>
+
+    <div class="card">
+      <h2>Addresses</h2>
+      {{with .URIErr}}<p class="problem">{{.}}</p>{{end}}
+      <table>
+        <thead><tr><th>Channel</th><th>URI</th><th>File</th></tr></thead>
+        <tbody>
+          {{range .URIs}}
+            <tr>
+              <td>{{.Channel.Name}}</td>
+              <td>{{if .Err}}<span class="problem">{{.Err}}</span>{{else}}<span class="mono">{{.URI}}</span>{{end}}</td>
+              <td><span class="mono">{{.File}}</span></td>
+            </tr>
+          {{else}}
+            <tr><td colspan="3" class="empty">this site has no output channels</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Published files</h2>
+      {{with .ResErr}}<p class="problem">{{.}}</p>{{end}}
+      <table>
+        <thead><tr><th>Channel</th><th>URI</th><th>Published</th><th>Bytes</th></tr></thead>
+        <tbody>
+          {{range .Resources}}
+            <tr><td>{{.ChannelName}}</td><td class="mono">{{.URI}}</td><td>{{stamp .PublishedAt}}</td><td>{{.Bytes}}</td></tr>
+          {{else}}
+            <tr><td colspan="4" class="empty">nothing has been published for this document</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>Actions</h2>
+      {{template "actions" .Actions}}
+    </div>
+
+    <div class="card">
+      <h2>Approvals</h2>
+      {{template "approvals" .Approvals}}
+    </div>
+
+    <div class="card">
+      <h2>Assignment</h2>
+      <p>{{with .Assignee}}{{.}}{{else}}<span class="empty">nobody</span>{{end}}
+        {{if not (zero .Doc.DueAt)}}&middot; due {{stamp .Doc.DueAt}}{{if .Overdue}} <span class="pill late">late</span>{{end}}{{end}}</p>
+      <form method="post" action="/documents/{{.Doc.UID}}/assignment">
+        <label for="user">Assign to</label>
+        <input id="user" name="user" placeholder="me, or a user uid" required>
+        <label for="due_at">Due</label>
+        <input id="due_at" type="datetime-local" name="due_at" value="{{forInput .Doc.DueAt}}">
+        <p><button type="submit">Assign</button></p>
+      </form>
+      <div class="row">
+        <form class="inline-form" method="post" action="/documents/{{.Doc.UID}}/assignment/clear"><button type="submit">Unassign</button></form>
+        <form class="inline-form row" method="post" action="/documents/{{.Doc.UID}}/due">
+          <input class="inline" type="datetime-local" name="due_at" value="{{forInput .Doc.DueAt}}">
+          <button type="submit">Set due</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Filed in</h2>
+      {{with .FilingErr}}<p class="problem">{{.}}</p>{{end}}
+      <ul>
+        {{range .Filings}}<li><span class="mono">{{.Category.Path}}</span>{{if .Primary}} <span class="pill">primary</span>{{end}}</li>{{else}}<li class="empty">nowhere in particular</li>{{end}}
+      </ul>
+      <form method="post" action="/documents/{{.Doc.UID}}/categories">
+        <label for="categories">Categories, the primary one first</label>
+        <input id="categories" name="categories" placeholder="/features/film/, /features/">
+        <p><button type="submit">File</button></p>
+      </form>
+      {{with .Categories}}
+        <p class="muted">This site has: {{range .}}<span class="mono">{{.Path}}</span> {{end}}</p>
+      {{end}}
+    </div>
+
+    <div class="card">
+      <h2>Preview and publish</h2>
+      {{if .Channels}}
+        <form method="post" action="/documents/{{.Doc.UID}}/preview">
+          <label for="channel">Output channel</label>
+          <select id="channel" name="channel">
+            <option value="">the site's only one</option>
+            {{range .Channels}}<option value="{{.UID}}">{{.Name}}</option>{{end}}
+          </select>
+          <p class="row">
+            <button type="submit">Preview</button>
+            <button type="submit" name="validate" value="on">Validate the template</button>
+          </p>
+        </form>
+        <form method="post" action="/documents/{{.Doc.UID}}/publications">
+          <label for="at">Publish at (empty means now)</label>
+          <input id="at" type="datetime-local" name="at">
+          <p class="row">
+            <button class="primary" type="submit">Publish</button>
+            <button type="submit" name="dry_run" value="on">Dry run</button>
+          </p>
+        </form>
+      {{else}}
+        <p class="empty">this site has no output channels, so there is nothing to render into</p>
+      {{end}}
+      {{if not .CanPreview}}<p class="muted">This server was started without --preview, so a preview answers 503 naming the flag.</p>{{end}}
+      {{if not .CanPublish}}<p class="muted">This server was started without --output or --templates, so it publishes nothing.</p>{{end}}
+    </div>
+  </div>
+</div>
+{{end}}

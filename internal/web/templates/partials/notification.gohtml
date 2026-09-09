@@ -1,0 +1,19 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "notification"}}
+<tr id="notification-{{.Notification.UID}}">
+  <td>{{stamp .Notification.OccurredAt}}</td>
+  <td>{{.Name}}<br><span class="muted mono">{{.Notification.EventType}}</span></td>
+  <td>{{.Notification.SubjectKind}}{{with .Notification.RuleName}}<br><span class="muted">by rule {{.}}</span>{{end}}</td>
+  <td>
+    {{if .Read}}
+      <span class="pill resolved">read {{stamp .Notification.ReadAt}}</span>
+    {{else}}
+      <form class="inline-form" method="post" action="/notifications/{{.Notification.UID}}/read"
+            hx-post="/notifications/{{.Notification.UID}}/read"
+            hx-target="#notification-{{.Notification.UID}}" hx-swap="outerHTML">
+        <button type="submit">Mark read</button>
+      </form>
+    {{end}}
+  </td>
+</tr>
+{{end}}

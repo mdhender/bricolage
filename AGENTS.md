@@ -53,7 +53,9 @@ internal/migrate        embedded migrations
 internal/service        use cases; owns transactions
 internal/{workflow,authz,publish,jobs,events,render}   subsystem logic
 internal/{api,web}      transports
+internal/web/templates  the UI's html/template files; internal/web/static its CSS and HTMX
 internal/web/devroutes  the /__development/* handlers; no build tag gates them
+internal/edge           what both transports agree on: the status mapping, the session cookie
 internal/server         composition root: the route table, the one shutdown path
 internal/{clock,ids,config,buildenv}
 internal/reqctx         per-request context values: client address, request id, identity
@@ -120,6 +122,12 @@ go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 --env development --ti
 go run ./cmd/earl login --server https://htmx-app.localhost:8443 --dev --email admin@example.com
 go run ./cmd/earl whoami
 ```
+
+The HTML UI is the same server at the same origin: point a browser at
+`https://htmx-app.localhost:8443/` and sign in, or visit
+`/__development/log-me-in/admin@example.com?returnTo=/` and skip the password.
+Everything it does, `earl` does too — that is `docs/PLAN.md` M13 acceptance 5,
+and a test asserts it.
 
 `seed` before `bootstrap admin`: the admin role is seeded, and bootstrap
 assigns it. Run them the other way round and bootstrap says so rather than

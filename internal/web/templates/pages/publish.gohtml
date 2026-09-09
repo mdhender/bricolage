@@ -1,0 +1,42 @@
+{{- /* Copyright (c) 2026 Michael D Henderson.
+
+A publish schedules jobs and publishes nothing: the answer names the version
+each job pinned, because that is the promise invariant 8 makes. A dry run is
+the same code path with the enqueue and the events left out. */ -}}
+{{define "content"}}
+<h1>{{if .Result.DryRun}}Dry run{{else}}Publish scheduled{{end}}</h1>
+<p class="sub"><a href="/documents/{{.Doc.UID}}">back to the document</a> &middot; at {{stamp .Result.At}}</p>
+<div class="card">
+  <h2>What was pinned</h2>
+  <table>
+    <thead><tr><th>Document</th><th>Version</th><th>Job</th></tr></thead>
+    <tbody>
+      {{range .Result.Scheduled}}
+        <tr>
+          <td><a href="/documents/{{.Document.UID}}">{{.Version.Title}}</a><br><span class="muted mono">{{.Document.UID}}</span></td>
+          <td>{{.Version.Number}}</td>
+          <td class="mono">{{with .Job.UID}}{{.}}{{else}}&mdash;{{end}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="3" class="empty">nothing was scheduled</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{if .Result.Refusals}}
+    <h2>Refusals</h2>
+    {{if .Result.WouldRefuse}}<p class="problem">under publish.related_failure = fail, this would publish nothing at all</p>{{end}}
+    <table>
+      <thead><tr><th>Document</th><th>Referenced by</th><th>Why</th></tr></thead>
+      <tbody>
+        {{range .Result.Refusals}}
+          <tr><td>{{.Title}}<br><span class="muted mono">{{.UID}}</span></td><td class="mono">{{.Referrer}}</td><td>{{.Reason}}: {{.Detail}}</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  {{end}}
+  {{with .Result.Channels}}
+    <h2>Channels</h2>
+    <ul>{{range .}}<li>{{.Name}}</li>{{end}}</ul>
+  {{end}}
+</div>
+{{end}}

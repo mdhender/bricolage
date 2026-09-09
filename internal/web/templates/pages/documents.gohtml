@@ -1,0 +1,28 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Documents</h1>
+<p class="sub">The same filters GET /api/v1/documents takes. "me" is whoever is asking; "nobody" is the unassigned pile.</p>
+<div class="card">
+  <form method="get" action="/documents" class="row">
+    <span>
+      <label for="state">State</label>
+      <select id="state" name="state">
+        <option value="">any</option>
+        {{$sel := .Filter.State}}
+        {{range .States}}<option value="{{.}}"{{if eq . $sel}} selected{{end}}>{{.}}</option>{{end}}
+      </select>
+    </span>
+    <span>
+      <label for="assignee">Assignee</label>
+      <input id="assignee" name="assignee" value="{{.Filter.Assignee}}" placeholder="me, nobody, or a user uid">
+    </span>
+    <span>
+      <label for="overdue">Overdue</label>
+      <input id="overdue" type="checkbox" name="overdue" class="inline"{{if .Filter.Overdue}} checked{{end}}>
+    </span>
+    <span><label>&nbsp;</label><button type="submit">Filter</button></span>
+  </form>
+</div>
+<div class="card">{{template "documentrows" .Documents}}</div>
+<p><a class="button" href="/documents/new">New document</a></p>
+{{end}}
