@@ -1,0 +1,112 @@
+# systemd unit for cmsd. EXAMPLE — copy to /etc/systemd/system/cms.service on
+# the droplet and edit the two site-specific lines (--public-origin, and the
+# paths if you did not use the layout in PROVISIONING.md).
+#
+# Install:
+#     sudo install -m 644 /opt/cms/deploy/cms.service /etc/systemd/system/cms.service
+#     sudo systemctl daemon-reload
+#     sudo systemctl enable --now cms
+#
+# This file is not read from the repository at runtime. It is committed so that
+# the unit under /etc/systemd/system is diffable against a known original.
+
+[Unit]
+Description=bricolage CMS (cmsd)
+Documentation=https://github.com/mdhender/bricolage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# cmsd does not speak sd_notify, so the unit is ready when the process is up.
+Type=exec
+User=deploy
+Group=deploy
+WorkingDirectory=/opt/cms
+
+# CMS_ENV carries the whole weight of the development-route gate, and it is
+# also half of the build/environment interlock: a binary built with
+# -tags production panics at startup unless this is exactly "production".
+# Set it here and nowhere else. Never in a shell profile, never in /etc/environment.
+#
+# CMS_ENV=development on this machine is a complete authentication bypass:
+# it registers GET /__development/log-me-in/{email}, which logs anyone in as
+# anyone. See docs/DESIGN.md 11, "Development affordances".
+Environment=CMS_ENV=production
+
+# Every directory named here must already exist. Nothing in this system creates
+# a directory (invariant 19) -- not cmsd, not cmsdb -- with the single exception
+# of the computed interior of the output tree (internal/publish/tree.go). A
+# missing directory is a startup failure that names the flag, which is the
+# intended behaviour: it is better than a server that silently publishes nowhere.
+#
+# --db names the directory; the database inside it is always cms.db. cmsd never
+# creates it and never migrates it. See "Deploying a new version" in
+# deploy/README.md for where `cmsdb migrate up` goes.
+#
+# --addr is loopback. cmsd never terminates TLS; the proxy on this droplet does.
+# --public-origin is configuration, not inference (DESIGN.md 11, requirement 1):
+# absolute URLs, the returnTo check, and the CSRF trusted-origin list all come
+# from this one value, so it must match what the browser typed, scheme included.
+#
+# --trusted-proxy is omitted deliberately. It defaults to 127.0.0.1/32 and
+# ::1/128, and the proxy runs on this same droplet, so the default is exactly
+# right. Widen it only if the proxy ever moves to another host, and then name
+# that host's address rather than a network you do not control.
+#
+# --timeout is omitted deliberately. It defaults to 0, meaning never; a server
+# that shuts itself down after a duration is a development affordance.
+ExecStart=/opt/cms/bin/cmsd serve \
+    --db /opt/cms/var \
+    --addr 127.0.0.1:18443 \
+    --public-origin https://cms.mdhenderson.com \
+    --templates /opt/cms/templates \
+    --preview /opt/cms/preview \
+    --output /opt/cms/output \
+    --workers 2
+
+Restart=on-failure
+RestartSec=5s
+
+# SIGTERM reaches the same graceful-shutdown path as --timeout and the
+# development shutdown route: stop accepting, drain in-flight requests, then
+# stop the workers (invariant 17). The drain is bounded by
+# config.DefaultDrainTimeout, 30s, so give systemd more than that before it
+# escalates to SIGKILL. A worker killed mid-job is not damage -- its lease
+# expires and the next worker claims the job -- but a clean stop releases the
+# lease immediately.
+KillSignal=SIGTERM
+TimeoutStopSec=45s
+
+# Logs go to stderr as structured slog, which journald captures.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cmsd
+
+# --- Hardening -------------------------------------------------------------
+# ProtectSystem=strict makes the whole filesystem read-only, so every directory
+# cmsd writes to has to be named. /opt/cms/var holds cms.db plus the -wal and
+# -shm files SQLite creates beside it, so the directory itself needs write
+# permission, not just the file. /opt/cms/templates is deliberately absent:
+# internal/render returns bytes and never writes.
+ProtectSystem=strict
+ReadWritePaths=/opt/cms/var /opt/cms/preview /opt/cms/output
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# The binary is pure Go with CGO_ENABLED=0, so there is no JIT and nothing that
+# needs writable-executable memory.
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

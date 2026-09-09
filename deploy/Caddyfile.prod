@@ -1,0 +1,61 @@
+# EXAMPLE — the production reverse proxy, as Caddy.
+#
+# Copy to /etc/caddy/Caddyfile on the droplet. This file is not read from the
+# repository at runtime; it is committed so the deployed config is diffable
+# against a known original.
+#
+# Pick ONE proxy. This file and deploy/nginx.conf are alternatives, not layers.
+# Caddy is the shorter path: it obtains and renews the certificate itself, with
+# no certbot, no timer, and no renewal hook.
+#
+# Do not confuse this with deploy/Caddyfile.dev, which documents the machine-wide
+# Homebrew Caddy on the development Mac and must never be run.
+#
+#     sudo systemctl reload caddy      # after editing
+#
+# The admin API stays on its default 127.0.0.1:2019, which is what makes that
+# reload work. Do not add `admin off` here: it would buy nothing on a droplet
+# where 2019 is not open to the internet, and it would cost the reload.
+
+cms.mdhenderson.com {
+	# TLS 1.3 or better is a requirement of the serving model (DESIGN.md 11),
+	# not a preference. Caddy's own default floor is 1.2, so say it.
+	# Certificates, renewal, and the HTTP->HTTPS redirect are Caddy's; cmsd
+	# owns none of them and emits no HSTS header of its own.
+	tls {
+		protocols tls1.3
+	}
+
+	# HSTS belongs to the proxy. Add includeSubDomains only once you are sure
+	# every hostname under mdhenderson.com can serve HTTPS -- the browser
+	# remembers this for a year and there is no fast way to take it back.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		# Caddy advertises itself by default; the version is free reconnaissance.
+		-Server
+	}
+
+	# reverse_proxy sets X-Forwarded-For, X-Forwarded-Proto and X-Forwarded-Host,
+	# and passes Origin and Sec-Fetch-* through unmodified. Both halves matter:
+	# cmsd resolves the client IP from the forwarded headers but honours them
+	# only from its trusted-proxy CIDRs (default loopback, which is where this
+	# proxy connects from), and net/http.CrossOriginProtection reads Origin and
+	# Sec-Fetch-Site to decide whether a cookie-authenticated write is CSRF.
+	# A proxy that rewrote or dropped Origin would break every form in the UI.
+	reverse_proxy 127.0.0.1:18443 {
+		# cmsd's graceful drain is 30s; do not cut a request off before then.
+		transport http {
+			read_timeout 60s
+		}
+	}
+
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/cms.access.log {
+			roll_size 10MiB
+			roll_keep 10
+		}
+		format json
+	}
+}

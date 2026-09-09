@@ -71,15 +71,26 @@ passes `Origin` and `Sec-Fetch-*` through unmodified will do. The proxy owns
 TLS configuration, HSTS, HTTP→HTTPS redirection, and certificates. `cmsd` owns
 none of them.
 
-Set in `cmsd` configuration:
+`deploy/Caddyfile.prod` and `deploy/nginx.conf` are worked examples of each,
+for `cms.mdhenderson.com`. `deploy/PROVISIONING.md` is the first-time setup of
+the droplet they run on; `deploy/cms.service` is the unit.
 
-| Key | Value |
+Everything `cmsd` needs is a flag, plus one environment variable. **There is no
+configuration file.** `docs/DESIGN.md` §11 lists a `--config FILE`, and
+`cmd/cmsd/main.go` says in a comment where it would be read; it is not
+implemented, and a flag that is parsed and ignored is worse than no flag. Until
+it exists, the unit file's `ExecStart` is the configuration:
+
+| Flag | Value |
 |---|---|
-| `server.addr` | a loopback address and port |
-| `server.public_origin` | the browser-facing origin, scheme included |
-| `server.trusted_proxies` | CIDRs the proxy connects from |
-| `server.timeout` | optional graceful shutdown after a duration; `0` = never |
-| `environment` | `production`, exported as `CMS_ENV` — see below |
+| `--addr` | a loopback address and port (default `127.0.0.1:18443`) |
+| `--public-origin` | the browser-facing origin, scheme included |
+| `--trusted-proxy` | CIDRs the proxy connects from (default `127.0.0.1/32`, `::1/128` — already right when the proxy is on the same host) |
+| `--timeout` | optional graceful shutdown after a duration; `0`, the default, means never |
+| `--db` | the directory holding `cms.db`; it must already exist |
+| `--templates`, `--preview`, `--output` | optional directories that must already exist; without them the server renders, previews, and publishes nothing |
+| `--workers` | background job workers in this process; `0` disables them |
+| `$CMS_ENV` | `production` — see below |
 
 `CMS_ENV=development` on a server is a complete authentication bypass: it is
 what registers the `/__development/*` routes, and either of them logs anyone in
@@ -104,6 +115,9 @@ configuration. See `docs/DESIGN.md` §14, "The build/environment interlock".
 The tag gates **nothing else**. It adds no routes, removes no code, and changes
 no behaviour beyond that one assertion.
 
+`make release` is this loop, and is the one place in the repository that runs
+`mkdir` — build output, not data:
+
 ```sh
 mkdir -p deploy/linux/amd64
 for c in cmsd cmsdb earl; do
@@ -121,10 +135,12 @@ of the cost of the change.
 Ship them:
 
 ```sh
-rsync -av --chmod=F755 deploy/linux/amd64/ deploy@SERVER:/opt/cms/bin/
+rsync -av --chmod=F755 deploy/linux/amd64/ cms:/opt/cms/bin/
 ```
 
-Then restart the service on the server. `deploy/linux/` is build output and is
+`cms` is a `~/.ssh/config` host alias for the droplet — see `PROVISIONING.md`,
+step 1. Then restart the service: "Deploying a new version" below has the order,
+which is not simply `systemctl restart`. `deploy/linux/` is build output and is
 not committed.
 
 Two checks worth doing once, on the server, before the first restart:
@@ -136,3 +152,43 @@ CMS_ENV=production /opt/cms/bin/cmsd version
 
 The first panicking is the interlock working. If it prints a version instead,
 the binary was built without `-tags production` and must not be deployed.
+
+## Deploying a new version
+
+The first deploy is `PROVISIONING.md`. Every one after it is this:
+
+```sh
+make check
+make release
+rsync -av --chmod=F755 deploy/linux/amd64/ cms:/opt/cms/bin/
+rsync -av --exclude=linux/ deploy/ cms:/opt/cms/deploy/
+```
+
+Then, on the droplet:
+
+```sh
+sudo systemctl stop cms
+CMS_ENV=production /opt/cms/bin/cmsdb migrate status --db /opt/cms/var
+CMS_ENV=production /opt/cms/bin/cmsdb migrate up --db /opt/cms/var
+sudo systemctl start cms
+```
+
+**The order is the point.** `cmsd` requires `PRAGMA user_version` to equal the
+number of migrations the binary embeds, and refuses to start otherwise (§13.4)
+— so a new binary with a pending migration will not run, which is the intended
+behaviour and not a bug to work around. The service is stopped first because
+`cmsdb` and `cmsd` would otherwise contend for the same SQLite write lock.
+
+Take the backup before the migration, not after:
+
+```sh
+sqlite3 /opt/cms/var/cms.db ".backup '/opt/cms/backups/cms-$(date +%F).db'"
+```
+
+Migrations are append-only after beta. Until then a squash is a deliberate,
+separately announced event — and on a database that has been deployed, it is a
+restore-from-backup, not a `migrate up`.
+
+If the unit file or a proxy config changed in the same push, install it from
+`/opt/cms/deploy/` and reload that service; the copies under `/etc` are meant
+to be diffable against the originals shipped there.
