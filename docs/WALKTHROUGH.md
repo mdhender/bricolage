@@ -25,5 +25,7 @@ Every guard, effect, privilege and status code in it is drawn from the code and
 from the workflow seeded by `internal/migrate/schema/0005_workflow.sql`. The
 times, the names and the story are invented.
 
-**The page is private.** The link resolves only for accounts it has been shared
-with; share it from the page's own share menu before pointing anyone at it.
+The page is public: the link above resolves for anyone who has it, with no
+Claude account needed. Treat it as published — it is a reasonable thing to
+hand to somebody evaluating the system, and a poor place to put anything this
+repository would not say in the open.
