@@ -114,6 +114,11 @@ func TestEarlPublish(t *testing.T) {
 		t.Error("the publish scheduled no job")
 	}
 
+	// The job, not the file. The file appears while the transaction that
+	// records it is still open (see waitForJob); waiting for the job is what
+	// makes the assertions below read a committed publish.
+	waitForJob(t, earl, scheduled.Job)
+
 	const published = "features/2026/03/01/a-feature/index.html"
 	waitForFile(t, output, published, true)
 
@@ -163,10 +168,18 @@ func TestEarlPublish(t *testing.T) {
 		earl(t, "doc", "checkout", doc.UID)
 		earl(t, "doc", "edit", doc.UID, "--slug", "a-renamed-feature")
 		earl(t, "doc", "checkin", doc.UID, "--note", "renamed")
-		earl(t, "doc", "publish", doc.UID)
+
+		var republished earlPublication
+		out := earl(t, "doc", "publish", "--json", doc.UID)
+		if err := json.Unmarshal([]byte(out), &republished); err != nil {
+			t.Fatalf("earl doc publish --json: %v\n%s", err, out)
+		}
+		waitForJob(t, earl, republished.Job)
 
 		const renamed = "features/2026/03/01/a-renamed-feature/index.html"
 		waitForFile(t, output, renamed, true)
+		// The old address goes away in the expiry job the publish enqueued,
+		// which is a job of its own and so still a wait.
 		waitForFile(t, output, published, false)
 
 		var got earlResources
@@ -312,6 +325,44 @@ func waitForFile(t *testing.T, root, path string, want bool) {
 			}
 			listed, _ := filepath.Glob(filepath.Join(root, "*"))
 			t.Fatalf("%s did not %s within the deadline; the tree holds %v", path, verb, listed)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitForJob waits for one job to reach a terminal status, and fails the test
+// if it failed rather than completed.
+//
+// It is the synchronisation point a database assertion needs, and the file is
+// not: store.Publish writes the files last but still *inside* the transaction,
+// so the moment a published file appears on disk the rows describing it are
+// written and not yet committed. A reader on the pool sees the snapshot from
+// before the commit, and "earl doc resources" answers with nothing -- which is
+// exactly the flake this replaced. A completed job is written by the worker
+// after service.Publish returned, so it happens after the commit and every row
+// the publish wrote is visible.
+func waitForJob(t *testing.T, earl func(*testing.T, ...string) string, uid string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var got earlJobList
+		out := earl(t, "job", "list", "--json")
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("earl job list --json: %v\n%s", err, out)
+		}
+		for _, j := range got.Jobs {
+			if j.UID != uid {
+				continue
+			}
+			switch j.Status {
+			case "completed":
+				return
+			case "failed":
+				t.Fatalf("job %s failed: %s", uid, j.LastError)
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %s did not finish within the deadline; the queue holds %+v", uid, got.Jobs)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

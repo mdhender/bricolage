@@ -169,6 +169,13 @@ func TestEarlPublishCascade(t *testing.T) {
 			}
 		}
 
+		// Every job, then every file. A published file appears while the
+		// transaction recording it is still open (see waitForJob), so the
+		// file alone would not say the cascade had committed.
+		waitForJob(t, earl, scheduled.Job)
+		for _, rel := range scheduled.Related {
+			waitForJob(t, earl, rel.Job)
+		}
 		for _, slug := range []string{"the-feature", "the-sidebar", "the-footnote"} {
 			waitForFile(t, output, "features/2026/03/01/"+slug+"/index.html", true)
 		}
