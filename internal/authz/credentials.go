@@ -3,6 +3,8 @@
 package authz
 
 import (
+	"testing"
+
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -15,11 +17,60 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Cost is the bcrypt work factor. bcrypt records it inside the hash, so
-// raising it later needs no migration and no second column: existing hashes
-// keep verifying at the cost they were written with, and a rehash-on-login can
-// be added when somebody wants one.
+// Cost is the bcrypt work factor a real run hashes with. bcrypt records it
+// inside the hash, so raising it later needs no migration and no second column:
+// existing hashes keep verifying at the cost they were written with, and a
+// rehash-on-login can be added when somebody wants one.
 const Cost = bcrypt.DefaultCost
+
+// TestCost is what a test binary hashes with, and it is the cheapest bcrypt
+// offers.
+//
+// Password hashing was roughly half of "make check": at Cost the suite ran 3:39
+// and burned 436s of CPU, at TestCost 1:55 and 167s. internal/service fell 84%,
+// internal/api 88%, internal/web 77%, while internal/store and internal/workflow
+// -- which hash nothing -- did not move. No test in this repository asserts
+// anything about how long a hash takes, so all of that was waste.
+const TestCost = bcrypt.MinCost
+
+// cost is the work factor this build actually uses: TestCost under "go test",
+// Cost everywhere else.
+//
+// testing.Testing() is what makes this *only* tests, which is the whole
+// requirement. The alternatives were worse in ways worth recording, because
+// both look tidier at first glance:
+//
+//   - The production build tag would have made every untagged binary hash
+//     cheaply -- "go run ./cmd/cmsd" included -- and bcrypt records the cost
+//     inside the hash, so a password written by a development binary is weak
+//     for ever. It would also have made the tag gate behaviour, which
+//     DESIGN.md 14 promises it never does.
+//   - An exported variable lowered by each test harness would be global mutable
+//     state in the package that hashes passwords, and a harness that forgot to
+//     set it would be silently slow.
+//
+// This costs one import of "testing" from non-test code, which is unusual
+// enough to justify: testing.Testing() exists for exactly this, it is false in
+// anything "go build" produces, and the alternative to importing it is a knob
+// somebody has to remember. The linker leaves the rest of the package out --
+// the two binaries differ by well under a percent.
+//
+// One consequence worth knowing rather than discovering: a test that runs cmsd
+// as a *subprocess* gets Cost, not TestCost, because that subprocess is not a
+// test binary. That is correct -- it is the real binary -- and it is why
+// cmd/cmsd's tests barely moved in the measurement above.
+func cost() int { return costFor(testing.Testing()) }
+
+// costFor is the decision, separated from the fact so that both answers can be
+// asserted without building a second binary. It is the same move invariant 3
+// makes with the clock: the caller supplies the circumstance, and what is left
+// is a pure function over it.
+func costFor(inTest bool) int {
+	if inTest {
+		return TestCost
+	}
+	return Cost
+}
 
 // TokenBytes is the size of a session token: 32 random bytes, base64url
 // encoded (DESIGN.md 14). The database stores only the SHA-256 of it.
@@ -48,7 +99,7 @@ func HashPassword(password string) (string, error) {
 	if err := ValidatePassword(password); err != nil {
 		return "", err
 	}
-	h, err := bcrypt.GenerateFromPassword([]byte(password), Cost)
+	h, err := bcrypt.GenerateFromPassword([]byte(password), cost())
 	if err != nil {
 		return "", fmt.Errorf("hashing a password: %w", err)
 	}
