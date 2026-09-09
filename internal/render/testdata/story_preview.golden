@@ -1,0 +1,17 @@
+<!doctype html>
+<title>A Film Piece</title>
+<p class="preview">Preview of 01JQ0000000000000000000000 (preview)</p>
+<article>
+  <h1>A Film Piece</h1>
+  <p class="deck">A deck &amp; a half</p>
+  <div class="body"><p>The quick brown <em>fox</em>.</p></div>
+  <footer>
+    <span class="site">Default (example.com)</span>
+    <span class="channel">Web index.html</span>
+    <span class="category">Film /features/film/ depth 2</span>
+    <span class="version">v3 a-film-piece 2026-03-01 draft=false</span>
+    <span class="state">story/story draft</span>
+    <a href="https://example.com/features/film/2026/03/01/a-film-piece">/features/film/2026/03/01/a-film-piece</a>
+  </footer>
+  <ul><li>body=&lt;p&gt;The quick brown &lt;em&gt;fox&lt;/em&gt;.&lt;/p&gt;</li><li>deck=A deck &amp; a half</li><li>rank=12</li></ul>
+</article>

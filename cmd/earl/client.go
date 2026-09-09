@@ -71,6 +71,13 @@ type Problem struct {
 	Detail   string `json:"detail"`
 	Instance string `json:"instance"`
 	Guard    string `json:"guard"`
+
+	// Template and Line name the template that failed and where, when one
+	// did (PLAN.md M8 acceptance 5). They survive production's rule that a
+	// 500 carries no detail, which is the point of them being extension
+	// members rather than prose.
+	Template string `json:"template"`
+	Line     int    `json:"line"`
 }
 
 // Error renders a problem the way a person wants to read it: the title, the
@@ -84,6 +91,13 @@ func (p *Problem) Error() string {
 	}
 	if p.Guard != "" {
 		fmt.Fprintf(&b, " (guard %s)", p.Guard)
+	}
+	if p.Template != "" {
+		fmt.Fprintf(&b, " (template %s", p.Template)
+		if p.Line > 0 {
+			fmt.Fprintf(&b, " line %d", p.Line)
+		}
+		b.WriteString(")")
 	}
 	if p.Instance != "" {
 		fmt.Fprintf(&b, " [request %s]", p.Instance)
@@ -171,14 +185,23 @@ func (c *Client) Get(ctx context.Context, path string, out any) error {
 	return c.Do(ctx, http.MethodGet, path, nil, out)
 }
 
-// GetText fetches a path and returns the body as text, for the development
-// login route, which answers with a token rather than a document.
+// GetText fetches a path and returns the body as text.
+//
+// Two routes answer with something other than a JSON document: the development
+// login route, which answers with a token, and /preview/{name}, which answers
+// with a rendered page. Both are read through here.
 func (c *Client) GetText(ctx context.Context, path string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.Server+path, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "*/*")
+	if c.Token != "" {
+		// The preview mount requires a live session, like every other route
+		// that reads content. The development login route has no token yet
+		// and sends none.
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
 
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -186,7 +209,7 @@ func (c *Client) GetText(ctx context.Context, path string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxTextResponse))
 	if err != nil {
 		return "", err
 	}
@@ -195,3 +218,9 @@ func (c *Client) GetText(ctx context.Context, path string) (string, error) {
 	}
 	return string(payload), nil
 }
+
+// maxTextResponse bounds a body read as text. A rendered page is the largest
+// thing this client fetches, and eight megabytes is more than any page a
+// person will read and small enough that a misconfigured server cannot fill
+// this process's memory.
+const maxTextResponse = 8 << 20

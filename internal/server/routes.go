@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mdhender/bricolage/internal/api"
+	"github.com/mdhender/bricolage/internal/render"
 	"github.com/mdhender/bricolage/internal/web/devroutes"
 )
 
@@ -31,6 +32,12 @@ func (r Route) IsDevelopment() bool {
 // IsAPI reports whether this route is part of the JSON API.
 func (r Route) IsAPI() bool {
 	return strings.Contains(r.Pattern, api.Prefix)
+}
+
+// IsPreview reports whether this route is the preview mount, which is neither
+// the JSON API nor a development affordance.
+func (r Route) IsPreview() bool {
+	return strings.Contains(r.Pattern, render.PreviewPrefix)
 }
 
 // builder registers handlers on a mux and records what it registered.
@@ -73,12 +80,23 @@ func (s *Server) buildRoutes() (*http.ServeMux, []Route) {
 	// is not there -- but the table would then differ from the one "serve"
 	// produces, so routes is told about the service too and the two agree.
 	if s.svc != nil || s.declareAPI {
-		b.note = "json api"
-		api.Register(b, api.Deps{
+		deps := api.Deps{
 			Service:     s.svc,
 			Environment: s.env,
 			Logger:      s.log,
-		})
+		}
+		b.note = "json api"
+		api.Register(b, deps)
+
+		// The preview mount (PLAN.md M8). It is not under the API prefix --
+		// what it serves is a page, and the point of a preview is that a
+		// browser can be pointed at it -- so it is registered separately and
+		// the table calls it what it is. It is registered whether or not this
+		// server was given a preview tree: a route that answers "this server
+		// was not started with --preview" is more use than a 404 that leaves
+		// somebody looking for a typo in the path.
+		b.note = "preview"
+		api.RegisterPreview(b, deps)
 		b.note = ""
 	}
 

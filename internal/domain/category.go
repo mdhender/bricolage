@@ -262,3 +262,31 @@ func PrimaryOf(filings []Filing) (Category, bool) {
 	}
 	return Category{}, false
 }
+
+// AncestorPaths returns path and every ancestor above it, deepest first, ending
+// at the root.
+//
+// It is the walk the template cascade performs (DESIGN.md 8.4): a document in
+// "/features/film/" looks for its element type's template in "/features/film/",
+// then "/features/", then "/". It is here rather than in internal/render
+// because it is arithmetic on a materialised path and everything else that
+// does arithmetic on one is here, and because a pure function is a table test.
+//
+// An invalid path yields nothing. The caller has a path from the database,
+// where the invariant holds; a caller that does not is asking about something
+// that is not a category, and answering with a plausible-looking list would
+// send it looking for templates in places no category could be.
+func AncestorPaths(path string) []string {
+	if err := ValidatePath(path); err != nil {
+		return nil
+	}
+	out := []string{path}
+	for path != RootPath {
+		// Every path ends in '/', so the parent is everything up to and
+		// including the slash before the last segment.
+		cut := strings.LastIndex(path[:len(path)-1], "/")
+		path = path[:cut+1]
+		out = append(out, path)
+	}
+	return out
+}

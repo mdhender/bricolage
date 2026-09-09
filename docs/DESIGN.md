@@ -144,7 +144,7 @@ internal/
   publish/          rendering, resources, expiry, related-asset cascade
   jobs/             queue, leases, worker loop, job kinds
   events/           event recording, alert rule evaluation, notifications
-  render/           template lookup + execution
+  render/           template lookup + execution, and the preview scratch tree
   api/              JSON REST handlers, request/response types
   web/              HTMX handlers and html/template files
   web/devroutes/    the `/__development/*` handlers; registered only in development
@@ -964,12 +964,78 @@ tree: a document in `/features/film/` looks for its element type's template in
 `/features/film/`, then `/features/`, then `/`. First match wins. This is the
 one piece of Bricolage's templating worth keeping and it is about fifteen lines.
 
-Three modes, as in the original: **publish** (write to the output tree),
-**preview** (write to a scratch tree, serve back), **validate** (parse and
-type-check, write nothing).
+Templates are files on disk, in a tree that mirrors the tree it is searched by:
+
+```
+<templates>/<site domain>/<category path>/<element type key>.gohtml
+<templates>/htmx-app.localhost/features/film/story.gohtml
+<templates>/htmx-app.localhost/story.gohtml
+```
+
+`cmsd --templates DIR` names the root and `--preview DIR` names the scratch
+tree. Both are optional — M0–M6 is a working editorial system with no
+publishing, and a server started without them serves everything else and
+answers `503` to a preview, naming the flag it was not given. Neither is ever
+created (invariant 19), and both are opened while the process is starting, so a
+directory that is not there is a refusal at startup rather than on the first
+preview.
+
+The **site directory** is the one level the cascade adds to what the paragraph
+above describes, and it is not decoration. Category paths are unique per site
+and not across sites: two sites both have `/features/`, and a tree without the
+site level would hand one site's templates to the other with nothing to notice.
+It is named by the site's domain because that is the key a person already types
+— `cmsdb seed` looks a site up by it — and because a directory named by a uid is
+a directory nobody can navigate.
+
+**Three modes**, as in the original: **publish** (bytes for the output tree),
+**preview** (bytes for the scratch tree, served back), **validate** (parse and
+type-check, produce nothing). `render.Render` returns bytes and never writes;
+that is what makes "a template that fails while executing writes no partial
+file" a property of the shape rather than of a cleanup somebody has to remember.
+The mode reaches the template as `.Mode` and `.Preview`, so a preview can draw
+the banner that stops somebody mistaking it for the live page.
+
+A template that will not parse, or will not run, is a `*domain.TemplateError`
+carrying the template's name and the line. It answers to no sentinel, so it is
+a `500` — this installation's configuration failing, not the caller's request —
+and the name and the line ride the problem document as extension members beside
+`guard`, because production discloses no detail for a `500` and the person who
+has to fix the template is otherwise told only that something went wrong.
+
+Validate mode is the exception that reports rather than fails: `POST
+.../preview` with `{"validate": true}` answers `200` with `valid` and the
+failure, for the reason `GET /documents/{uid}/uris` reports a channel that can
+build no address. The question asked was "does this compile", and "no, at line
+12" is an answer. A *missing* template is still a `404` naming the element type
+and every path searched: "there is no template" and "the template does not
+compile" send different people looking.
+
+**The preview tree is flat and content-addressed**: `<preview>/<sha256>.<ext>`,
+served at `GET /preview/{name}`. Nothing in this system creates a directory, so
+a scratch tree mirroring the output tree's shape could not be written at all —
+the first preview of the first story would need six directories nobody made.
+Content addressing needs none, and it pays for itself twice: two previews of one
+version against one template are one file, and a stale preview is never served
+under a name that now means something else. Writes go through a temporary file
+and a rename, so a reader sees the whole preview or no file.
+
+The mount requires a live session and serves with `Content-Security-Policy:
+sandbox allow-scripts allow-popups allow-forms`. A preview is HTML an editor
+wrote — markup included, since a block field holds markup and the renderer's
+`raw` exists to emit it — served from the same origin as the editorial UI. The
+sandbox gives it an opaque origin: scripts still run, so the preview looks like
+the page will, and they cannot reach the session cookie of the person previewing.
+`allow-same-origin` is deliberately absent; adding it would undo the whole header
+while leaving it looking careful, which is invariant 13's failure in a different
+costume.
 
 Media binaries are content-addressed on disk (`blobs/<sha256[:2]>/<sha256>`)
-with metadata in the database. The database stores no blobs.
+with metadata in the database. The database stores no blobs. `domain.BlobPath`
+is the addressing rule, written once so that the writer and the reader cannot
+invent two of them; nothing writes a blob yet, because there is no media ingest
+route in §12, and whatever adds one will need the shard directory to exist
+already.
 
 ## 9. Jobs
 
@@ -1184,6 +1250,7 @@ not worth paging somebody for.
 ```
 cmsd serve --db DIR [--addr 127.0.0.1:18443] [--workers N] [--config FILE]
            [--env development|production] [--timeout DURATION]
+           [--templates DIR] [--preview DIR]
 cmsd routes                       print the route table and exit
 cmsd version                      version, commit, Go version
 ```
@@ -1201,11 +1268,17 @@ require `--env development` and nothing else; see "Development affordances"
 below. `cmsd routes` prints the table the running configuration actually
 produces, so it is the way to ask whether they are registered.
 
-Serves three things from one process:
+Serves four things from one process:
 
 - `/api/v1/...` — the JSON REST API (§12)
+- `/preview/...` — rendered previews, authenticated and sandboxed (§8.4)
 - `/...` — the HTMX UI, `html/template` rendered
 - background job workers, unless `--workers 0`
+
+`--templates` and `--preview` name directories that must already exist and are
+never created (§8.4, invariant 19). Both are optional; without them the server
+answers `503` to a preview, naming the flag it was not given, and serves
+everything else.
 
 Graceful shutdown: stop accepting, drain in-flight requests, let workers finish
 the current job or release its lease, close the pool.
@@ -1492,6 +1565,9 @@ POST   /api/v1/documents/{uid}/comments
 POST   /api/v1/comments/{uid}/resolution
 GET    /api/v1/documents/{uid}/events
 
+POST   /api/v1/documents/{uid}/preview           {"channel":"...","validate":bool}
+GET    /preview/{name}                          the rendered preview itself
+
 POST   /api/v1/documents/{uid}/publications      {"at":...,"channels":[...],"dry_run":bool}
 GET    /api/v1/documents/{uid}/resources
 
@@ -1599,6 +1675,21 @@ Errors are RFC 9457 problem documents:
 | unknown uid | 404 |
 | guard refused / lock held / state conflict | 409 |
 | malformed body, invalid content | 422 |
+| this server was not configured to answer it | 503 |
+
+The last row arrived with M8 and `domain.ErrUnavailable`: a request that is well
+formed, that the caller may make, and that this process cannot answer because of
+how it was started — rendering with no template tree. Its detail reaches the
+client in production, unlike every other `5xx`, because the message names the
+flag that was not given rather than an internal failure, and withholding it
+leaves an authenticated caller with "something went wrong" about the one thing
+they cannot diagnose.
+
+`POST /documents/{uid}/preview` renders into the scratch tree and answers with
+where it went; `GET /preview/{name}` serves it (§8.4). Preview needs `read` over
+the document and nothing more: previewing changes nothing, takes no edit lease,
+and requiring `publish` would mean the only people who could check a template
+were the people who could put it live.
 
 Requests carry `Idempotency-Key` on `POST`s that create jobs; store the key with
 the created resource and return the same result on replay.

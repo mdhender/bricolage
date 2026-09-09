@@ -35,6 +35,17 @@ var (
 	// where every other sentinel here is a 401, 403, 404, or 409.
 	ErrInvalid = errors.New("invalid")
 
+	// ErrUnavailable is returned when the request is well formed, the caller
+	// may make it, and this server was not configured to answer it: rendering
+	// with no template tree, previewing with no scratch tree.
+	//
+	// It is separate from ErrConflict because the two send different people
+	// looking. A conflict is about the document and the person holding it can
+	// resolve it; this is about how the process was started, and only whoever
+	// started it can. It is the 503 of the table in DESIGN.md 12, which the
+	// table did not have because until M8 nothing could be half configured.
+	ErrUnavailable = errors.New("unavailable")
+
 	// ErrUnauthenticated is returned when there is no caller to speak of: no
 	// credential, one that does not name a session, or a session that has
 	// expired. It is separate from ErrForbidden because the two are different

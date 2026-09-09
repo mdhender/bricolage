@@ -27,6 +27,7 @@ import (
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/jobs"
 	"github.com/mdhender/bricolage/internal/migrate"
+	"github.com/mdhender/bricolage/internal/render"
 	"github.com/mdhender/bricolage/internal/server"
 	"github.com/mdhender/bricolage/internal/service"
 	"github.com/mdhender/bricolage/internal/store"
@@ -78,6 +79,18 @@ type flags struct {
 	// wants the workers in one of them, and a maintenance window wants them
 	// in none.
 	workers int
+
+	// templates is the template tree and preview is the scratch tree
+	// previews are written to (PLAN.md M8). Both are directories that must
+	// already exist and neither has a default: a default would be a guess at
+	// a path, and a guess that resolves to nothing looks exactly like a
+	// template nobody wrote.
+	//
+	// Both are optional. M0 through M6 is a working editorial system with no
+	// publishing, and a server started without them serves everything else
+	// and answers 503 to a preview, naming the flag it was not given.
+	templates string
+	preview   string
 }
 
 func newRootCmd() *cobra.Command {
@@ -135,12 +148,33 @@ func newServeCmd(f *flags) *cobra.Command {
 				"migrations", migrate.Count(),
 			)
 
+			// The template tree and the scratch tree, opened before anything
+			// binds a port: a server that cannot read the directory it was
+			// pointed at should say so while starting rather than on the
+			// first preview. Neither is created if it is missing
+			// (invariant 19).
+			renderer, previews, err := settings.rendering(f)
+			if err != nil {
+				return err
+			}
+			if renderer == nil && previews == nil {
+				settings.log.Info("rendering disabled; neither --templates nor --preview was given")
+			} else {
+				settings.log.Info("rendering",
+					"templates", f.templates,
+					"preview", f.preview,
+					"reload", settings.resolution.Environment.IsDevelopment(),
+				)
+			}
+
 			// The one place outside internal/clock that reads the wall clock
 			// is main, and this is it: the real clock is constructed here and
 			// handed down (invariant 3).
 			svc, err := service.New(db, service.Options{
-				Clock:  clock.Real{},
-				Logger: settings.log,
+				Clock:    clock.Real{},
+				Logger:   settings.log,
+				Renderer: renderer,
+				Preview:  previews,
 			})
 			if err != nil {
 				return err
@@ -187,6 +221,10 @@ func newServeCmd(f *flags) *cobra.Command {
 	_ = cmd.MarkFlagRequired("db")
 	cmd.Flags().IntVar(&f.workers, "workers", jobs.DefaultWorkers,
 		"background job workers to run in this process; 0 disables them")
+	cmd.Flags().StringVar(&f.templates, "templates", "",
+		"directory holding the template tree; it must already exist, and without it this server renders nothing")
+	cmd.Flags().StringVar(&f.preview, "preview", "",
+		"directory previews are written to; it must already exist, and without it this server serves none")
 	return cmd
 }
 
@@ -294,6 +332,40 @@ func resolve(f *flags) (*settings, error) {
 		addr:       f.addr,
 		timeout:    f.timeout,
 	}, nil
+}
+
+// rendering opens the template tree and the scratch tree, or returns nils.
+//
+// Both are optional and neither is created. A flag that was not given yields a
+// nil, which the service reports as a 503 naming the flag; a flag that was
+// given and does not name a directory is a hard failure, because an operator
+// who asked for previews and got none silently would find out from a reader.
+//
+// The environment decides whether a template is re-read on every render
+// (DESIGN.md 14). It is the only thing here the environment governs, and it
+// governs no route.
+func (s *settings) rendering(f *flags) (*render.Engine, *render.Scratch, error) {
+	var (
+		engine  *render.Engine
+		scratch *render.Scratch
+		err     error
+	)
+	if f.templates != "" {
+		engine, err = render.New(render.Options{
+			Root:   f.templates,
+			Reload: s.resolution.Environment.IsDevelopment(),
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if f.preview != "" {
+		scratch, err = render.NewScratch(f.preview)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return engine, scratch, nil
 }
 
 // server builds the Server. A nil service is the "cmsd routes" case: the table

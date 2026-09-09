@@ -41,6 +41,11 @@ type Problem struct {
 
 	// Errors carries field-level detail for a 422.
 	Errors []FieldError `json:"errors,omitempty"`
+
+	// Template and Line name the template that failed and where, when one
+	// did (PLAN.md M8 acceptance 5).
+	Template string `json:"template,omitempty"`
+	Line     int    `json:"line,omitempty"`
 }
 
 // FieldError is one invalid field in a 422.
@@ -63,6 +68,10 @@ type FieldError struct {
 //	unknown uid                            404
 //	guard refused, lock held, conflict     409
 //	malformed body, invalid content        422
+//
+// One row is an addition to it: a request this server was not configured to
+// answer -- rendering with no template tree -- is 503. It is not in
+// DESIGN.md 12's table because until M8 nothing could be half configured.
 func statusFor(err error) (status int, kind, title string) {
 	switch {
 	case errors.Is(err, domain.ErrUnauthenticated):
@@ -77,6 +86,8 @@ func statusFor(err error) (status int, kind, title string) {
 		return http.StatusConflict, "conflict", "Conflict"
 	case errors.Is(err, domain.ErrInvalid):
 		return http.StatusUnprocessableEntity, "invalid", "Invalid request"
+	case errors.Is(err, domain.ErrUnavailable):
+		return http.StatusServiceUnavailable, "unavailable", "Not available"
 	default:
 		return http.StatusInternalServerError, "internal", "Internal error"
 	}
@@ -121,8 +132,28 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		}
 	}
 
+	// A broken template names itself and the line it broke at
+	// (PLAN.md M8 acceptance 5). It is an extension member rather than part
+	// of the detail because a template failure is a 500, and a 500's detail
+	// is generic in production -- the person who has to fix the template
+	// would otherwise be told only that something went wrong. The name of a
+	// template on this server is not a secret; the stack behind it is, and
+	// that stays in the log.
+	if te, ok := domain.TemplateErrorOf(err); ok {
+		p.Template = te.Template
+		p.Line = te.Line
+	}
+
 	switch {
 	case status < http.StatusInternalServerError:
+		p.Detail = err.Error()
+	case errors.Is(err, domain.ErrUnavailable):
+		// A 503 says this server was not configured to answer the request,
+		// and its message names the flag that was not given. It is written
+		// for the operator rather than derived from an internal failure, and
+		// withholding it would leave an authenticated caller with "something
+		// went wrong" about a thing nobody can fix without being told which
+		// thing it is.
 		p.Detail = err.Error()
 	case h.env.IsDevelopment():
 		p.Detail = err.Error()

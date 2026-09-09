@@ -10,6 +10,7 @@ import (
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/jobs"
+	"github.com/mdhender/bricolage/internal/render"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/mdhender/bricolage/internal/workflow"
 )
@@ -55,6 +56,15 @@ type Service struct {
 	// refers to and nothing points at one, so naming a few is a config file's
 	// job and not a migration's.
 	queues config.QueueSet
+
+	// renderer is the template tree and preview is the scratch tree
+	// (PLAN.md M8). Both are nil on a server started without them, which is a
+	// supported configuration and not a mistake: M0 through M6 is a working
+	// editorial system with no publishing, and an installation that does its
+	// rendering somewhere else should not have to invent two directories to
+	// start the server.
+	renderer *render.Engine
+	preview  *render.Scratch
 }
 
 // Options configure a Service. Everything is resolved before New is called;
@@ -87,6 +97,15 @@ type Options struct {
 	// JobLease is how long a worker's claim on a job lasts; zero means
 	// jobs.DefaultLease.
 	JobLease time.Duration
+
+	// Renderer is the template tree, or nil for a server that renders
+	// nothing. Preview is the scratch tree previews are written to, or nil
+	// for a server that serves none. Both are built by main, from a directory
+	// that must already exist, because opening one is where the failure
+	// belongs: a server that could not read its templates should say so while
+	// starting rather than on the first preview.
+	Renderer *render.Engine
+	Preview  *render.Scratch
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -109,6 +128,8 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		touchAfter: opts.TouchAfter,
 		lockLease:  opts.LockLease,
 		queues:     opts.Queues,
+		renderer:   opts.Renderer,
+		preview:    opts.Preview,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)

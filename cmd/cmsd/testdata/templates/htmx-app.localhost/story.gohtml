@@ -1,0 +1,6 @@
+<!doctype html>
+<title>{{.Version.Title}}</title>
+<p class="from">the site root template</p>
+<p class="uri">{{.URI}}</p>
+{{if .Preview}}<p class="preview">preview of version {{.Version.Number}}, draft={{.Version.Draft}}</p>{{end}}
+<div class="body">{{raw (printf "%s" .Content.body)}}</div>

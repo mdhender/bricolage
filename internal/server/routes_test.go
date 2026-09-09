@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mdhender/bricolage/internal/config"
+	"github.com/mdhender/bricolage/internal/render"
 	"github.com/mdhender/bricolage/internal/web/devroutes"
 )
 
@@ -114,5 +115,33 @@ func TestHealthz(t *testing.T) {
 	}
 	if got := strings.TrimSpace(rec.Body.String()); got != "ok" {
 		t.Errorf("body = %q, want %q", got, "ok")
+	}
+}
+
+// TestPreviewMountIsInTheTable is PLAN.md M8: previews are served under
+// /preview/, and "cmsd routes" is how an operator asks what this server
+// mounts. It is neither a JSON API route nor a development affordance, and the
+// table classifies it as itself.
+func TestPreviewMountIsInTheTable(t *testing.T) {
+	for _, env := range []config.Environment{config.Production, config.Development} {
+		s := newTestServer(t, env)
+
+		var found []Route
+		for _, r := range s.Routes() {
+			if r.IsPreview() {
+				found = append(found, r)
+			}
+		}
+		if len(found) != 1 {
+			t.Fatalf("%v: the table lists %d preview routes, want 1", env, len(found))
+		}
+		if found[0].IsAPI() || found[0].IsDevelopment() {
+			t.Errorf("%v: the preview mount %q is classified as api=%v development=%v",
+				env, found[0].Pattern, found[0].IsAPI(), found[0].IsDevelopment())
+		}
+		if !strings.HasPrefix(found[0].Pattern, "GET "+render.PreviewPrefix) {
+			t.Errorf("%v: the preview mount is %q, want a GET under %q",
+				env, found[0].Pattern, render.PreviewPrefix)
+		}
 	}
 }

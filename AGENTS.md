@@ -128,6 +128,14 @@ silently creating a user with no role.
 with `--password-stdin`. It never takes a password as a flag — arguments are
 visible in `ps` and land in shell history.
 
+**Rendering needs two directories you create yourself.** `cmsd serve` takes an
+optional `--templates DIR` and `--preview DIR`; without them everything else
+works and `earl doc preview` answers 503 naming the flag it was not given.
+Neither is ever created (invariant 19). The template tree is
+`<templates>/<site domain>/<category path>/<element type key>.gohtml`, so for
+the seeded site the fallback template is
+`templates/htmx-app.localhost/story.gohtml`. Full rules: `docs/DESIGN.md` §8.4.
+
 **`--db` names a directory, not a file** (`DESIGN.md` §13.1). The database
 inside it is always `cms.db`. Nothing in this system creates a directory, so
 `mkdir` is your job and a missing directory is a hard failure rather than a

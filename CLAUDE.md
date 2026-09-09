@@ -108,19 +108,21 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M7 are complete and M8 has not started. `cmsdb` can `init`,
+M0 through M8 are complete and M9 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
 refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
 the session, identity, grant, document, version, diff, history, transition,
 workflow, assignment, due-date, queue, job, site, category, output-channel,
-element-type, filing, and URI routes plus `/healthz`. It also hosts the
-background job workers, behind `--workers N` (default 1, `0` to disable).
+element-type, filing, URI, and preview routes plus `/healthz` and the
+`/preview/` mount. It also hosts the background job workers, behind
+`--workers N` (default 1, `0` to disable), and takes the optional
+`--templates DIR` and `--preview DIR`.
 `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
 `admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris`.
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview`.
 
 The schema is nine migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
@@ -181,6 +183,21 @@ assignment and due dates, and `DESIGN.md` §12 was corrected to match. The first
 category given is the primary one, which is what `domain.BuildURI` expands
 `%{categories}` from.
 
+Rendering is a directory of files and a walk up the category tree. A template
+lives at `<templates>/<site domain>/<category path>/<element type key>.gohtml`
+and the deepest one wins; `internal/render` returns bytes and never writes, so
+"a template that fails while executing leaves no partial file" is a property of
+the shape. The site directory is the one level the design did not spell out and
+it is load-bearing: two sites both have `/features/`. The preview tree is flat
+and content-addressed — `<preview>/<sha256>.<ext>`, served at
+`GET /preview/{name}` behind a live session and a `sandbox` CSP — because
+nothing creates a directory and a tree shaped like the output tree could not be
+written at all. `--templates` and `--preview` are optional and never created;
+without them a preview is a 503 naming the flag. A broken template is a
+`domain.TemplateError` answering to no sentinel, so a 500, with the template and
+the line as problem-document extension members; validate mode reports one as a
+200 instead, because the question asked was whether it compiles.
+
 Content is validated against `element_types.schema` on check-in and nowhere
 else. A working draft may be invalid; a checked-in version may not. An element
 type declaring no fields declares that a document of that type carries none, so
@@ -221,8 +238,8 @@ test in `internal/workflow` enforce both. Creating a document is not a
 transition — it starts in the initial state rather than moving into it — so
 `CreateDocument` writes the column once at `INSERT`.
 
-`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx}`
-are real. `internal/{publish,render,web}` are still a `doc.go` stating the
+`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render}`
+are real. `internal/{publish,web}` are still a `doc.go` stating the
 package's responsibility and permitted imports — read that doc before adding
 the first real file to one.
 

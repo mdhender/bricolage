@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -75,6 +76,7 @@ func newDocCmd() *cobra.Command {
 		newDocDueCmd(),
 		newDocCategoriesCmd(),
 		newDocURIsCmd(),
+		newDocPreviewCmd(),
 	)
 	return cmd
 }
@@ -886,3 +888,129 @@ func newDocURIsCmd() *cobra.Command {
 	addJSONFlag(cmd, &asJSON)
 	return cmd
 }
+
+// previewResponse is a rendered preview as the API speaks it.
+type previewResponse struct {
+	UID      string   `json:"uid"`
+	Mode     string   `json:"mode"`
+	Channel  string   `json:"channel"`
+	Name     string   `json:"channel_name"`
+	Version  int      `json:"version"`
+	Draft    bool     `json:"draft"`
+	Category string   `json:"category"`
+	URI      string   `json:"uri"`
+	URL      string   `json:"url"`
+	Template string   `json:"template"`
+	Searched []string `json:"searched"`
+	Path     string   `json:"path"`
+	Checksum string   `json:"checksum"`
+	Bytes    int      `json:"bytes"`
+	Valid    bool     `json:"valid"`
+	Error    *struct {
+		Template string `json:"template"`
+		Line     int    `json:"line"`
+		Phase    string `json:"phase"`
+		Message  string `json:"message"`
+	} `json:"error"`
+}
+
+// newDocPreviewCmd is "earl doc preview" (PLAN.md M8).
+//
+// It prints the rendered page by default, because that is what a person asking
+// for a preview wants to see and because an agent driving this without a
+// browser has no other way to look at one. --url prints the address instead,
+// for somebody who does have a browser, and --validate asks the other question
+// this route answers: whether the template compiles at all.
+func newDocPreviewCmd() *cobra.Command {
+	var (
+		server   string
+		asJSON   bool
+		channel  string
+		validate bool
+		asURL    bool
+	)
+	cmd := &cobra.Command{
+		Use:   "preview UID",
+		Short: "Render a document and print it, its address, or its template's errors",
+		Long: "Render a document and print it.\n\n" +
+			"The rendered page is written to the server's preview tree and served\n" +
+			"back under /preview/; --url prints that address instead of the page.\n" +
+			"--validate parses the template and writes nothing, which is the way to\n" +
+			"ask whether a template compiles without publishing something to find\n" +
+			"out.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if validate && asURL {
+				return fmt.Errorf("--validate writes no preview, so there is no --url to print")
+			}
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+
+			body := map[string]any{}
+			if channel != "" {
+				body["channel"] = channel
+			}
+			if validate {
+				body["validate"] = true
+			}
+			var out previewResponse
+			if err := client.Do(cmd.Context(), http.MethodPost, docPath(args[0])+"/preview", body, &out); err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			if asJSON {
+				if err := writeJSON(w, out); err != nil {
+					return err
+				}
+				if !out.Valid {
+					return errTemplateInvalid
+				}
+				return nil
+			}
+
+			if validate {
+				if out.Valid {
+					fmt.Fprintf(w, "ok\t%s\n", out.Template)
+					return nil
+				}
+				fmt.Fprintf(w, "invalid\t%s\n", out.Template)
+				if out.Error != nil {
+					fmt.Fprintf(w, "%s\n", out.Error.Message)
+				}
+				return errTemplateInvalid
+			}
+
+			if asURL {
+				fmt.Fprintln(w, client.Server+out.Path)
+				return nil
+			}
+
+			page, err := client.GetText(cmd.Context(), out.Path)
+			if err != nil {
+				return err
+			}
+			_, err = io.WriteString(w, page)
+			return err
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	cmd.Flags().StringVar(&channel, "channel", "",
+		"the output channel's uid; needed only when the site has more than one")
+	cmd.Flags().BoolVar(&validate, "validate", false,
+		"parse the template and report what is wrong with it, writing nothing")
+	cmd.Flags().BoolVar(&asURL, "url", false,
+		"print the preview's address instead of the rendered page")
+	return cmd
+}
+
+// errTemplateInvalid is what "earl doc preview --validate" exits with when the
+// template does not compile.
+//
+// The report has already been printed on stdout; this is what makes the exit
+// code say so as well. An agent driving this reads exit codes, and "invalid"
+// on stdout with a zero exit is a report nobody acts on.
+var errTemplateInvalid = errors.New("the template does not compile")

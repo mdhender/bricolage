@@ -179,6 +179,18 @@ func Register(mux Mux, deps Deps) {
 	handle("PUT "+Prefix+"documents/{uid}/categories", h.authenticated(h.fileDocument))
 	handle("GET "+Prefix+"documents/{uid}/uris", h.authenticated(h.documentURIs))
 
+	// Rendering (PLAN.md M8). POST because it produces something: a file in
+	// the scratch tree, at an address of its own, which GET /preview/{name}
+	// serves. The same route validates the template instead, with
+	// {"validate": true}, because "which template would this document use"
+	// and "does that template compile" are one lookup and the answer to the
+	// second is worthless without the first.
+	//
+	// The mount that serves what this writes is registered by
+	// internal/server, through RegisterPreview: it is not under Prefix, and a
+	// route table that called it "json api" would be describing it wrongly.
+	handle("POST "+Prefix+"documents/{uid}/preview", h.authenticated(h.previewDocument))
+
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 	handle("POST "+Prefix+"element-types", h.authenticated(h.createElementType))
 	handle("GET "+Prefix+"element-types/{key}", h.authenticated(h.showElementType))
