@@ -655,7 +655,15 @@ where a test can configure one.
 
 **Goal.** People find out that something happened.
 
-**Schema.** `alert_rules`, `notifications`.
+**Schema.** `alert_rules`, `notifications`, `alert_cursor`.
+
+`alert_cursor` is a third table this list did not name, and `DESIGN.md` §10 has
+been corrected to include it. "Rules evaluated after commit, off the event row"
+needs somewhere to record which rows have been driven off; the alternative is
+calling a dispatcher from each of the thirty-odd places that write an event,
+which is thirty places to forget one. Both of the other two carry a `uid`,
+because invariant 10 outranks the `/notifications/{id}/read` this document's
+sibling spelled — the same correction M6 made for jobs.
 
 **Work.**
 - Condition evaluation resolving fields from actor, event payload, then subject,
@@ -668,8 +676,13 @@ where a test can configure one.
 - API and `earl` for rules and notifications.
 
 **Acceptance.**
-1. A rule matching `document.transitioned` with `to_state = 'legal'` notifies
-   the configured recipients and nobody else.
+1. A rule matching `document.transitioned` on the destination state notifies the
+   configured recipients and nobody else. Two names in the original wording are
+   corrected here rather than in the code: the payload key M4 writes is `to`,
+   not `to_state`, and the default workflow this repository seeds has no `legal`
+   state — its states are draft, review, approved, published, archived — so the
+   tests condition on `to = 'review'`. Renaming a payload key M4 has been
+   writing since M4 would rewrite history to match an example.
 2. All conditions must pass (`AND`). A rule with two conditions where one fails
    fires nothing.
 3. A rule with an invalid regexp is rejected at save time with a clear message,

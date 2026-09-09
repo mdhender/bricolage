@@ -5,6 +5,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -380,3 +381,76 @@ func TestServeWithoutWorkersStillShutsDown(t *testing.T) {
 		t.Fatalf("Serve = %v, want nil", err)
 	}
 }
+
+// TestBackgroundsRunsEveryMember is M12's second background: the alert
+// dispatcher runs beside the job workers, and both stop on the one shutdown
+// path (invariant 17). A group that returned before one of its members had
+// stopped would break the promise Serve relies on.
+func TestBackgroundsRunsEveryMember(t *testing.T) {
+	first, second := newFakeBackground(), newFakeBackground()
+	// A nil member is skipped: "--workers 0" hands the group nothing for the
+	// queue and still runs the dispatcher.
+	group := Backgrounds{first, nil, second}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- group.Run(ctx) }()
+
+	<-first.started
+	<-second.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Run returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return when its context ended")
+	}
+	for name, b := range map[string]*fakeBackground{"the first": first, "the second": second} {
+		select {
+		case <-b.stopped:
+		default:
+			t.Errorf("Run returned before %s member had stopped", name)
+		}
+	}
+}
+
+// TestBackgroundsJoinsFailuresAndStillWaits: one member failing does not stop
+// the others. They are independent, and taking the queue down because the
+// dispatcher could not read a row is the failure mode internal/jobs already
+// refuses.
+func TestBackgroundsJoinsFailuresAndStillWaits(t *testing.T) {
+	healthy := newFakeBackground()
+	broken := backgroundFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return errors.New("the dispatcher gave up")
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- Backgrounds{healthy, broken}.Run(ctx) }()
+
+	<-healthy.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "gave up") {
+			t.Errorf("Run returned %v, want the member's error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+	select {
+	case <-healthy.stopped:
+	default:
+		t.Error("Run returned before the healthy member had stopped")
+	}
+}
+
+// backgroundFunc adapts a function to Background.
+type backgroundFunc func(ctx context.Context) error
+
+func (f backgroundFunc) Run(ctx context.Context) error { return f(ctx) }

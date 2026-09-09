@@ -163,6 +163,14 @@ testdata/           fixtures
 `service`: they hold logic too specific to be `domain` and too reusable to be a
 single service method. They may import `domain` and `store`, not `api` or `web`.
 
+`events` is the one that does not import `store`, and the reason is worth
+writing down rather than rediscovering: `store`'s own tests use `events`' type
+constants — a fixture spelling `"document.approved"` as a string literal is a
+fixture one typo away from asserting nothing — and a package cannot import the
+package whose tests import it. So the alert dispatcher names the store methods
+it needs as an interface, which `*store.DB` satisfies without being told, and
+the dependency points one way again.
+
 `authz` owns authentication's primitives as well as authorization's rules:
 bcrypt password hashing, session-token minting, and the SHA-256 the sessions
 table is keyed by. They are small, they have no other client, and a package
@@ -1348,23 +1356,74 @@ CREATE TABLE alert_rules (
   name TEXT NOT NULL, event_type TEXT NOT NULL,
   conditions TEXT NOT NULL DEFAULT '[]',   -- JSON [{field, op, value}]
   channel TEXT NOT NULL, target TEXT NOT NULL,
-  active INTEGER NOT NULL DEFAULT 1
+  active INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE notifications (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY, uid TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
   rule_id INTEGER REFERENCES alert_rules(id) ON DELETE SET NULL,
   read_at TEXT, created_at TEXT NOT NULL
 ) STRICT;
+
+CREATE TABLE alert_cursor (            -- one row: how far the dispatcher has read
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  last_event_id INTEGER NOT NULL, updated_at TEXT NOT NULL
+) STRICT;
 ```
+
+Both tables carry a `uid`, which is invariant 10 applied to the route this
+section's API list spells `/notifications/{uid}/read`: internal integer keys
+never appear in a URL. It is the same correction migration 0008 made for jobs.
 
 Conditions resolve field values from three sources in order — the acting user,
 the event payload, then the subject — which is the clever part of Bricolage's
-design and worth copying. Operators: `eq ne lt lte gt gte in contains matches`.
-`matches` is a Go regexp, compiled once and cached; reject rules whose pattern
-does not compile at save time, not at fire time.
+design and worth copying. **The payload beating the subject is the half that
+earns its keep:** an event is a record of a moment, so a rule about `state` on a
+`document.created` event asks what the state *was*, not what it is now. The
+acting user's facts are spelled `actor_uid`, `actor_email`, `actor_name`, so
+that the ambient source cannot silently shadow a field a rule meant to read off
+the event.
+
+Operators: `eq ne lt lte gt gte in contains matches`. `matches` is a Go regexp,
+compiled once and cached; reject rules whose pattern does not compile at save
+time, not at fire time. A rule is an **AND** of its conditions and there is no
+`OR` — two rules are how you say "or", and they cost one row each and can be
+switched off separately. A field nothing supplies fails every operator, `ne`
+included: an assertion about a field an event does not carry is an assertion
+that cannot be made, and the alternative has every rule firing on every event
+that happens not to mention the column it is about.
+
+A rule's `target` names an audience in a shape that says which kind it is:
+`user:<uid>`, `role:<slug>`, or — on the e-mail channel only — `email:<address>`.
+The prefix is required rather than guessed at. A bare string would have to be
+resolved by trying one table and then the other, and a rule that notified the
+wrong audience because the guess went the other way is a rule whose failure
+looks exactly like a rule that matched nothing.
+
+**The dispatcher is a poll over the events table, not a call at the end of each
+service method.** §6.4 requires evaluation after commit, driven off the event
+row, so that a failing notification cannot roll back an editorial action.
+"Driven off the event row" needs somewhere to record which rows have been driven
+off, and `alert_cursor` is it: a batch's notifications and the cursor that
+acknowledges its events are written in one transaction, and the `UPDATE` names
+the value the batch was read at, so a second dispatcher racing it loses the
+compare-and-swap rather than delivering the batch again. The alternative —
+calling a dispatcher from each of the thirty-odd places that write an event — is
+thirty places to forget one, which is the failure invariant 7 exists to prevent
+reintroduced one layer up. The cost is latency: an alert arrives within a poll
+rather than within a request, which is the right trade for a notification.
+
+The in-app channel writes its row *inside* that transaction, because it is a row
+in this database. Everything that leaves the process — e-mail today — is
+delivered after the commit through a `Deliverer` interface, and a failure there
+is counted and logged rather than returned: by the time a channel fails there is
+no transaction left for it to be part of, which is §6.4's rule made structural
+rather than remembered. The default e-mail implementation writes a log line and
+sends nothing; an installation that sends mail supplies its own.
 
 ## 11. The three commands
 
@@ -1694,6 +1753,14 @@ earl job list        [--failed] [--pending] [--kind K] [--limit N]
 earl job retry       UID
 earl admin grant     --role R --privilege P [scope flags...]
 earl admin assign    --user UID --role R
+earl alert list                                     the rules, and whether each is on
+earl alert show      UID
+earl alert create    --name N --event T --channel C --target T [--condition F:OP:V]...
+earl alert update    UID [--active=false] [--condition ...]   only what you give changes
+earl alert delete    UID
+earl alert events                                   the event types a rule may watch
+earl notification list [--unread] [--limit N]       your own inbox
+earl notification read UID
 ```
 
 Every command supports `--json` for machine-readable output; the default is a
@@ -1765,8 +1832,10 @@ GET    /api/v1/queues                           the saved definitions
 GET    /api/v1/queues/{slug}
 GET    /api/v1/jobs                            ?pending, ?failed, ?kind, ?limit
 POST   /api/v1/jobs/{uid}/retry
-GET    /api/v1/notifications
-POST   /api/v1/notifications/{id}/read
+GET    /api/v1/notifications                   ?unread, ?limit; the caller's own
+POST   /api/v1/notifications/{uid}/read
+GET    /api/v1/alert-rules                      the rules, and the event vocabulary
+POST   /api/v1/alert-rules                      GET/PATCH/DELETE /{uid}
 
 POST   /api/v1/grants                            write a grant; refuses an escalation (§7.3)
 POST   /api/v1/users/{uid}/roles                 assign a role; the same refusal applies
@@ -1785,6 +1854,24 @@ and refuses a category with children or with documents filed in it, for the same
 reason: cascading would silently unfile documents — changing their URIs and
 stopping their category-scoped grants matching — and the person who deleted a
 section would find out from a reader.
+
+**An alert rule may be deleted, and the schema is what decides it.**
+`notifications.rule_id` is `ON DELETE SET NULL` (§10), so the rows a rule
+produced survive it carrying no rule: what a rule already told somebody still
+happened, and nothing is orphaned by removing the rule that said it. Switching
+one off is an `active` column rather than a deletion, because an alert silenced
+for the duration of a bulk import is one somebody wants back on Friday with its
+conditions intact.
+
+**An inbox is a person's.** `GET /notifications` and
+`POST /notifications/{uid}/read` read and write the caller's own, matched on
+the user as well as the uid, so somebody else's notification is *not found*
+rather than refused. There is deliberately no route to another person's and no
+privilege that would open one: reading one would report what the rules are
+watching somebody do. The rule routes are the opposite — a rule names an
+audience and says what it is watched for, so writing or reading one needs
+`create` over the **system subject**, which is the rule element types follow
+and for the same reason (§7).
 
 **A category is named by its path wherever a person types one.** `/features/film/`
 is what a grant carries and what a URI is built from, and `UNIQUE (site_id,

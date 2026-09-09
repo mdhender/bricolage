@@ -67,8 +67,9 @@ func New(deps Deps) *Handler {
 // diff, and history routes, M4 the transitions, M5 assignment, due dates, and
 // the queues, M6 the job queue, M7 sites, categories, output channels,
 // element types, and the URIs they produce, M8 the preview, M9 the
-// publications and the resources they leave behind, and M11 the comments and
-// approvals the guards have been reading since M4. The routes that are still
+// publications and the resources they leave behind, M11 the comments and
+// approvals the guards have been reading since M4, and M12 the alert rules and
+// the notifications they produce. The routes that are still
 // missing arrive with the milestones that implement them; a route registered
 // before its service method exists is a 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
@@ -229,6 +230,30 @@ func Register(mux Mux, deps Deps) {
 	handle("GET "+Prefix+"documents/{uid}/approvals", h.authenticated(h.listApprovals))
 	handle("POST "+Prefix+"documents/{uid}/approvals", h.authenticated(h.approveDocument))
 	handle("DELETE "+Prefix+"documents/{uid}/approvals/current", h.authenticated(h.withdrawApproval))
+
+	// Alerts and notifications (PLAN.md M12). The rule routes are an addition
+	// to DESIGN.md 12's list, which named only the two notification routes: a
+	// rule engine whose rules can only be written with a SQLite shell is a
+	// rule engine earl cannot exercise, and if earl cannot do it the API is
+	// incomplete.
+	//
+	// There is a DELETE here where there is none on an output channel or an
+	// element type, and the schema is what decides it: those two are pointed
+	// at by foreign keys that would orphan documents, and a rule is pointed
+	// at by notifications.rule_id, which is ON DELETE SET NULL because what a
+	// rule already told somebody still happened.
+	//
+	// The notification routes are the caller's own inbox and nobody else's.
+	// There is deliberately no route that reads another person's, and no
+	// privilege that would open one: an inbox is a person's, and reading it
+	// would report what the rules are watching them do.
+	handle("GET "+Prefix+"alert-rules", h.authenticated(h.listAlertRules))
+	handle("POST "+Prefix+"alert-rules", h.authenticated(h.createAlertRule))
+	handle("GET "+Prefix+"alert-rules/{uid}", h.authenticated(h.showAlertRule))
+	handle("PATCH "+Prefix+"alert-rules/{uid}", h.authenticated(h.patchAlertRule))
+	handle("DELETE "+Prefix+"alert-rules/{uid}", h.authenticated(h.deleteAlertRule))
+	handle("GET "+Prefix+"notifications", h.authenticated(h.listNotifications))
+	handle("POST "+Prefix+"notifications/{uid}/read", h.authenticated(h.readNotification))
 
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 	handle("POST "+Prefix+"element-types", h.authenticated(h.createElementType))

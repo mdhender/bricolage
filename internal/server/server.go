@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/mdhender/bricolage/internal/config"
@@ -102,6 +103,45 @@ type Options struct {
 // queue would be a dependency pointing the wrong way (DESIGN.md 3).
 type Background interface {
 	Run(ctx context.Context) error
+}
+
+// Backgrounds runs several of them as one.
+//
+// It exists because M12 gives this server a second thing to run beside the job
+// workers -- the alert dispatcher -- and the alternative was a second field
+// here, a second goroutine in Run, and a second place that decided when
+// background work stops. Invariant 17 is that graceful shutdown is one code
+// path; a second field would not have been a second path, but the third one
+// would have been.
+//
+// Run returns when every member has returned, so the promise the server relies
+// on -- "Run returns only once whatever it started has stopped" -- is the
+// promise this keeps. A member that fails does not stop the others: they are
+// independent, and taking the queue down because the dispatcher could not read
+// a row is the failure mode internal/jobs already refuses.
+type Backgrounds []Background
+
+// Run starts every member and waits for all of them.
+func (bs Backgrounds) Run(ctx context.Context) error {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
+	)
+	for _, b := range bs {
+		if b == nil {
+			continue
+		}
+		wg.Go(func() {
+			if err := b.Run(ctx); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	return errors.Join(errs...)
 }
 
 // Server is cmsd's HTTP server: one route table, one shutdown path.

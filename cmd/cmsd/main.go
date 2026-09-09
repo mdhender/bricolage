@@ -25,6 +25,7 @@ import (
 	"github.com/mdhender/bricolage/internal/buildenv"
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
+	"github.com/mdhender/bricolage/internal/events"
 	"github.com/mdhender/bricolage/internal/jobs"
 	"github.com/mdhender/bricolage/internal/migrate"
 	"github.com/mdhender/bricolage/internal/publish"
@@ -243,7 +244,23 @@ func newServeCmd(f *flags) *cobra.Command {
 			// here, because they have to stop when it does and a second place
 			// that decided when that was would be a second shutdown path
 			// (invariant 17). --workers 0 hands it nothing and none run.
-			var background server.Background
+			// The alert dispatcher (PLAN.md M12). It reads the events
+			// table after commit and turns matching rows into
+			// notifications, so it runs wherever the workers do and stops
+			// on the same one shutdown path (invariant 17). The e-mail
+			// channel is the logging implementation, which is the default
+			// this milestone ships: an installation that sends mail
+			// supplies a Deliverer of its own here.
+			dispatcher, err := events.NewDispatcher(events.DispatcherOptions{
+				DB:     db,
+				Clock:  clock.Real{},
+				Logger: settings.log,
+			})
+			if err != nil {
+				return err
+			}
+
+			var background server.Backgrounds
 			if f.workers > 0 {
 				// The registry is built here and the publish and expire kinds
 				// are registered into it by the package that owns them. A
@@ -264,10 +281,11 @@ func newServeCmd(f *flags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				background = pool
+				background = append(background, pool)
 			} else {
 				settings.log.Info("job workers disabled", "workers", f.workers)
 			}
+			background = append(background, dispatcher)
 
 			srv, err := settings.server(svc, background)
 			if err != nil {

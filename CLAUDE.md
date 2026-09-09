@@ -108,25 +108,29 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M11 are complete and M12 has not started. `cmsdb` can `init`,
+M0 through M12 are complete and M13 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
 §13.4, and serves the session, identity, grant, document, version, diff,
 history, transition, workflow, assignment, due-date, queue, job, site,
 category, output-channel, element-type, filing, URI, preview, publication,
-resource, comment, and approval routes plus `/healthz` and the `/preview/`
-mount. It also hosts the
+resource, comment, approval, alert-rule, and notification routes plus
+`/healthz` and the `/preview/` mount. It also hosts the
 background job workers, behind `--workers N` (default 1, `0` to disable), and
-takes the optional `--templates DIR`, `--preview DIR`, `--output DIR`, and
+the alert dispatcher, which always runs; both are handed to `internal/server`
+as one `server.Backgrounds` and stopped by it. It takes the optional
+`--templates DIR`, `--preview DIR`, `--output DIR`, and
 `--related-failure fail|warn`.
 `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
 `admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources|comment|comments|resolve|approve [--withdraw]|approvals`.
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources|comment|comments|resolve|approve [--withdraw]|approvals`,
+`alert list|show|create|update|delete|events`, and
+`notification list [--unread]|read`.
 
-The schema is eleven migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is twelve migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -146,7 +150,8 @@ scope columns), and `0010_publishing.sql` (`published_resources` and the
 effect and its `has_checked_in_version` guard), and `0011_collaboration.sql`
 (no tables: the `UPDATE` raising the `review` state's `required_approvals` to
 1, now that M11's API can satisfy it, and the `comments_document` index the
-thread listing seeks on). `grants` now carries all nine of `DESIGN.md` §7's scope
+thread listing seeks on), and `0012_alerts.sql` (`alert_rules`,
+`notifications`, and `alert_cursor`). `grants` now carries all nine of `DESIGN.md` §7's scope
 dimensions; each arrived with the migration that created its target table,
 because SQLite cannot add a foreign key to a column that already exists.
 `internal/domain` and `internal/authz` have carried and resolved the whole scope
@@ -329,6 +334,34 @@ threads are one level deep — replying to a reply joins that reply's thread.
 Commenting needs `read` and resolving needs `edit`, with a thread's author
 always able to resolve their own; neither needs the edit lease, for the reason
 assignment and filing do not.
+
+**Alerts are a poll over the events table, not a call at the end of each
+service method.** `DESIGN.md` §6.4 requires evaluation after commit, driven off
+the event row, so a failing notification cannot roll back an editorial action —
+and "driven off the event row" needs somewhere to record which rows have been
+driven off, which is the one-row `alert_cursor`. A batch's notifications and
+the cursor acknowledging its events are one transaction, and the `UPDATE` names
+the value the batch was read at, so a second dispatcher loses the
+compare-and-swap rather than delivering twice. Wiring a dispatcher into each of
+the thirty-odd places that write an event would be thirty places to forget one;
+this way an event written by `cmsdb`, by a worker, or by a route nobody has
+written yet is alertable without anybody having wired it in.
+
+`internal/events` therefore names the seven store methods it needs as an
+interface rather than importing `internal/store`: store's own tests use the
+event constants, and a package cannot import the package whose tests import it.
+Conditions are an AND (there is no OR — two rules are how you say it), fields
+resolve actor → payload → subject with the actor's spelled `actor_*` so it
+cannot shadow, an unresolved field fails every operator including `ne`, and a
+`matches` pattern is compiled when the rule is saved. A target is
+`user:<uid>`, `role:<slug>`, or — email only — `email:<address>`; the prefix is
+required because a guess that went the wrong way would notify the wrong
+audience and look exactly like a rule that matched nothing. In-app delivery is
+a row inside the cursor transaction; anything that leaves the process goes
+through `events.Deliverer` after the commit, with failures counted and logged.
+Writing or reading a rule needs `create` over the system subject, as an element
+type does; an inbox is the caller's own and needs no privilege, because there
+is no route to anybody else's.
 
 `internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render,publish}`
 are real. `internal/web` is still a `doc.go` stating the package's

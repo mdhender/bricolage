@@ -208,6 +208,37 @@ const (
 	// wrongly.
 	DocumentApprovalWithdrawn = "document.approval_withdrawn"
 
+	// The alert events (PLAN.md M12). A rule decides who is told about
+	// everything else in this list, so a change to one is a change to what
+	// the system says out loud -- which is exactly the kind of configuration
+	// change the structure events below exist to record.
+
+	// AlertRuleCreated is written when a rule comes into existence. The
+	// payload carries the event type it watches, the channel, and the target,
+	// because "who was being told about this, last March" is the question an
+	// audit of a notification asks.
+	AlertRuleCreated = "alert_rule.created"
+
+	// AlertRuleUpdated is written when a rule's configuration changes,
+	// turning one off included. A rule that stopped firing is the hardest
+	// kind of failure to notice, and this is the line that says when it
+	// stopped.
+	AlertRuleUpdated = "alert_rule.updated"
+
+	// AlertRuleDeleted is written before the row goes, against the id it
+	// names, so that a deleted rule still has a history. The notifications it
+	// produced outlive it -- notifications.rule_id is ON DELETE SET NULL --
+	// and this is what still says what produced them.
+	AlertRuleDeleted = "alert_rule.deleted"
+
+	// There is deliberately no "notification.read". Marking one's own
+	// notification read is a state change, and it is the same kind of state
+	// change a job claim is: the row carries the whole of it in read_at,
+	// nobody but its owner can make it, and an event per read would put a row
+	// in the audit spine every time somebody scrolled an inbox. What
+	// invariant 7 asks is that an operation's effect be reconstructible, and
+	// the effect is one nullable column on the row itself.
+
 	// The structure events (PLAN.md M7). Categories, output channels and
 	// element types are configuration rather than content, and every one of
 	// these is a state change that a document's address or validity depends
@@ -288,6 +319,10 @@ var names = map[string]string{
 	DocumentPublished:        "Published",
 	ResourceExpired:          "Resource expired",
 
+	AlertRuleCreated: "Alert rule created",
+	AlertRuleUpdated: "Alert rule updated",
+	AlertRuleDeleted: "Alert rule deleted",
+
 	CategoryCreated:      "Category created",
 	CategoryMoved:        "Category moved",
 	CategoryDeleted:      "Category deleted",
@@ -329,6 +364,9 @@ func All() []string {
 		DocumentPublishScheduled,
 		DocumentPublished,
 		ResourceExpired,
+		AlertRuleCreated,
+		AlertRuleUpdated,
+		AlertRuleDeleted,
 		CategoryCreated,
 		CategoryMoved,
 		CategoryDeleted,
