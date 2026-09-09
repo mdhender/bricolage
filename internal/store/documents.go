@@ -26,11 +26,30 @@ import (
 const documentColumns = `
 	d.id AS id, d.uid AS uid, d.site_id AS site_id, d.kind AS kind,
 	d.element_type_id AS element_type_id, et.key_name AS element_type_key,
+	et.fixed_uri AS element_type_fixed_uri,
 	d.workflow_id AS workflow_id, d.state AS state,
+	cat.id AS category_id, cat.path AS category_path,
 	d.assigned_to AS assigned_to, d.due_at AS due_at,
 	d.locked_by AS locked_by, d.lock_expires_at AS lock_expires_at,
 	d.current_version_id AS current_version_id, d.live_version_id AS live_version_id,
 	d.created_at AS created_at, d.updated_at AS updated_at`
+
+// documentFrom is the FROM clause every document read shares.
+//
+// The element type is joined because the API speaks its key name and the
+// integer key never leaves the process (invariant 10), and because
+// domain.BuildURI needs its fixed_uri flag and is pure, so it cannot go and
+// look. The primary category is joined for the same reason twice over: the
+// authorization resolver matches a category-scoped grant by prefix on the
+// path and performs no I/O (DESIGN.md 7.2), and %{categories} expands from it.
+//
+// Both category joins are LEFT: a document filed nowhere is a document, its
+// category path is empty, and a grant that names a category does not match it.
+const documentFrom = `
+	  FROM documents d
+	  JOIN element_types et ON et.id = d.element_type_id
+	  LEFT JOIN document_categories dc ON dc.document_id = d.id AND dc.primary_cat = 1
+	  LEFT JOIN categories cat ON cat.id = dc.category_id`
 
 // versionColumns is the projection every version read shares.
 const versionColumns = `
@@ -47,10 +66,16 @@ type NewElementType struct {
 	FixedURI  bool
 	Paginated bool
 
-	// Schema is the JSON field definition document. M3 stores it and does not
-	// validate content against it (PLAN.md M3, "Schema").
+	// Schema is the JSON field definition document. M3 stored it and did not
+	// validate content against it; M7 validates a check-in against it
+	// (domain.ValidateContent, PLAN.md M7 acceptance 5).
 	Schema    string
 	CreatedAt time.Time
+
+	// Event is recorded in the same transaction as the insert, when there is
+	// one. "cmsdb seed" writes an element type before there is anybody to
+	// have written it and passes none; the API always passes one.
+	Event domain.Event
 }
 
 // CreateElementType inserts an element type. A duplicate key name is a
@@ -58,7 +83,7 @@ type NewElementType struct {
 // "cmsdb seed" idempotent without a read-then-write race.
 func (db *DB) CreateElementType(ctx context.Context, et NewElementType) (domain.ElementType, error) {
 	var out domain.ElementType
-	err := db.Write(ctx, func(conn *sqlite.Conn) error {
+	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
 		err := run(conn, "creating element type "+et.KeyName, `
 			INSERT INTO element_types
 			       (uid, key_name, name, kind, top_level, fixed_uri, paginated, schema, created_at)
@@ -77,8 +102,16 @@ func (db *DB) CreateElementType(ctx context.Context, et NewElementType) (domain.
 		if err != nil {
 			return err
 		}
+		id := conn.LastInsertRowID()
+		if et.Event.Type != "" {
+			et.Event.SubjectKind = domain.SubjectElementType
+			et.Event.SubjectID = id
+			if _, err := recordEvent(conn, et.Event); err != nil {
+				return err
+			}
+		}
 		out = domain.ElementType{
-			ID:        conn.LastInsertRowID(),
+			ID:        id,
 			UID:       et.UID,
 			KeyName:   et.KeyName,
 			Name:      et.Name,
@@ -95,6 +128,81 @@ func (db *DB) CreateElementType(ctx context.Context, et NewElementType) (domain.
 }
 
 const elementTypeColumns = `id, uid, key_name, name, kind, top_level, fixed_uri, paginated, schema, created_at`
+
+// UpdateElementType replaces an element type's mutable configuration.
+//
+// The key name and the kind are not among them. The key name is what a client
+// names the type by and what a document's response carries (invariant 10);
+// the kind decides which documents may use it and is a grant scope dimension,
+// so changing it would silently change who may touch every document of that
+// type. Both are decided at creation, like a document's kind.
+//
+// The schema is the interesting one, and it is replaceable on purpose: a
+// schema that could not be corrected would be a schema nobody dared write.
+// Content already checked in is not revalidated -- a version is immutable and
+// what it was valid against is what it was checked in against -- so a
+// tightened schema takes effect at the next check-in, which is where a person
+// can do something about it.
+func (db *DB) UpdateElementType(ctx context.Context, et domain.ElementType, event domain.Event) (domain.ElementType, error) {
+	var out domain.ElementType
+	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
+		err := run(conn, "updating element type "+et.KeyName, `
+			UPDATE element_types
+			   SET name = :name, top_level = :top_level, fixed_uri = :fixed_uri,
+			       paginated = :paginated, schema = :schema
+			 WHERE id = :id`,
+			func(stmt *sqlite.Stmt) {
+				stmt.SetText(":name", et.Name)
+				stmt.SetBool(":top_level", et.TopLevel)
+				stmt.SetBool(":fixed_uri", et.FixedURI)
+				stmt.SetBool(":paginated", et.Paginated)
+				stmt.SetText(":schema", domain.NormalizeContent(et.Schema))
+				stmt.SetInt64(":id", et.ID)
+			}, nil)
+		if err != nil {
+			return err
+		}
+		if conn.Changes() == 0 {
+			return notFound(fmt.Sprintf("element type %d", et.ID))
+		}
+
+		if event.Type != "" {
+			event.SubjectKind = domain.SubjectElementType
+			event.SubjectID = et.ID
+			if _, err := recordEvent(conn, event); err != nil {
+				return err
+			}
+		}
+		return one(conn, "element type "+et.KeyName,
+			`SELECT `+elementTypeColumns+` FROM element_types WHERE id = :id`,
+			func(stmt *sqlite.Stmt) { stmt.SetInt64(":id", et.ID) },
+			func(stmt *sqlite.Stmt) error {
+				var err error
+				out, err = scanElementType(stmt)
+				return err
+			})
+	})
+	return out, err
+}
+
+// ElementTypeByUID reads an element type by the identifier the API speaks for
+// everything else. The key name is the one a client normally uses, because it
+// is what a document names its type by; this is here so that an administrative
+// update can address a row whose key name is being read off a listing.
+func (db *DB) ElementTypeByUID(ctx context.Context, uid string) (domain.ElementType, error) {
+	var et domain.ElementType
+	err := db.Read(ctx, func(conn *sqlite.Conn) error {
+		return one(conn, fmt.Sprintf("element type %q", uid),
+			`SELECT `+elementTypeColumns+` FROM element_types WHERE uid = :uid`,
+			func(stmt *sqlite.Stmt) { stmt.SetText(":uid", uid) },
+			func(stmt *sqlite.Stmt) error {
+				var err error
+				et, err = scanElementType(stmt)
+				return err
+			})
+	})
+	return et, err
+}
 
 // ElementTypeByKeyName reads an element type by its external identifier.
 func (db *DB) ElementTypeByKeyName(ctx context.Context, keyName string) (domain.ElementType, error) {
@@ -311,9 +419,7 @@ func (db *DB) DocumentByUID(ctx context.Context, uid string) (domain.Document, e
 
 func documentByUID(conn *sqlite.Conn, uid string, d *domain.Document) error {
 	return one(conn, fmt.Sprintf("document %q", uid), `
-		SELECT `+documentColumns+`
-		  FROM documents d
-		  JOIN element_types et ON et.id = d.element_type_id
+		SELECT `+documentColumns+documentFrom+`
 		 WHERE d.uid = :uid`,
 		func(stmt *sqlite.Stmt) { stmt.SetText(":uid", uid) },
 		func(stmt *sqlite.Stmt) error {
@@ -325,9 +431,7 @@ func documentByUID(conn *sqlite.Conn, uid string, d *domain.Document) error {
 
 func documentByID(conn *sqlite.Conn, id int64, d *domain.Document) error {
 	return one(conn, fmt.Sprintf("document %d", id), `
-		SELECT `+documentColumns+`
-		  FROM documents d
-		  JOIN element_types et ON et.id = d.element_type_id
+		SELECT `+documentColumns+documentFrom+`
 		 WHERE d.id = :id`,
 		func(stmt *sqlite.Stmt) { stmt.SetInt64(":id", id) },
 		func(stmt *sqlite.Stmt) error {
@@ -366,18 +470,25 @@ func scanDocument(stmt *sqlite.Stmt) (domain.Document, error) {
 	}
 
 	d := domain.Document{
-		ID:             id,
-		UID:            stmt.GetText("uid"),
-		SiteID:         stmt.GetInt64("site_id"),
-		Kind:           stmt.GetText("kind"),
-		ElementTypeID:  stmt.GetInt64("element_type_id"),
-		ElementTypeKey: stmt.GetText("element_type_key"),
-		WorkflowID:     stmt.GetInt64("workflow_id"),
-		State:          stmt.GetText("state"),
-		DueAt:          due,
-		Lock:           domain.Lock{ExpiresAt: lockExpires},
-		CreatedAt:      created,
-		UpdatedAt:      updated,
+		ID:                  id,
+		UID:                 stmt.GetText("uid"),
+		SiteID:              stmt.GetInt64("site_id"),
+		Kind:                stmt.GetText("kind"),
+		ElementTypeID:       stmt.GetInt64("element_type_id"),
+		ElementTypeKey:      stmt.GetText("element_type_key"),
+		ElementTypeFixedURI: stmt.GetBool("element_type_fixed_uri"),
+		WorkflowID:          stmt.GetInt64("workflow_id"),
+		State:               stmt.GetText("state"),
+		DueAt:               due,
+		Lock:                domain.Lock{ExpiresAt: lockExpires},
+		CreatedAt:           created,
+		UpdatedAt:           updated,
+	}
+	if v := nullInt64(stmt, "category_id"); v != nil {
+		d.CategoryID = *v
+	}
+	if s := nullText(stmt, "category_path"); s != nil {
+		d.CategoryPath = *s
 	}
 	if v := nullInt64(stmt, "assigned_to"); v != nil {
 		d.AssignedTo = *v

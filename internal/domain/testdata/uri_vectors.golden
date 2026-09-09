@@ -1,0 +1,102 @@
+root category
+  format   %{categories}/%Y/%m/%d/%{slug}
+  category /
+  slug     "a-story" (use_slug=true)
+  cover    "2026-03-01"
+  uri      /2026/03/01/a-story
+  file     /2026/03/01/a-story/index.html
+
+nested category
+  format   %{categories}/%Y/%m/%d/%{slug}
+  category /features/film/
+  slug     "a-story" (use_slug=true)
+  cover    "2026-03-01"
+  uri      /features/film/2026/03/01/a-story
+  file     /features/film/2026/03/01/a-story/index.html
+
+slug off
+  format   %{categories}/%Y/%m/%d/%{slug}
+  category /features/film/
+  slug     "a-story" (use_slug=false)
+  cover    "2026-03-01"
+  uri      /features/film/2026/03/01
+  file     /features/film/2026/03/01/index.html
+
+slug off at the root
+  format   %{categories}/%Y/%m/%d/%{slug}
+  category /
+  slug     "a-story" (use_slug=false)
+  cover    "2026-03-01"
+  uri      /2026/03/01
+  file     /2026/03/01/index.html
+
+fixed uri format
+  format   %{categories}/%{slug}
+  category /features/film/
+  slug     "about-us" (use_slug=true)
+  cover    ""
+  uri      /features/film/about-us
+  file     /features/film/about-us/index.html
+
+fixed uri format at the root
+  format   %{categories}/%{slug}
+  category /
+  slug     "about-us" (use_slug=true)
+  cover    ""
+  uri      /about-us
+  file     /about-us/index.html
+
+a format containing %Y/%m/%d
+  format   %{categories}/%Y/%m/%d
+  category /features/film/
+  slug     "a-story" (use_slug=true)
+  cover    "2026-03-01"
+  uri      /features/film/2026/03/01
+  file     /features/film/2026/03/01/index.html
+
+a document with no cover date
+  format   %{categories}/%Y/%m/%d/%{slug}
+  category /features/film/
+  slug     "about-us" (use_slug=true)
+  cover    ""
+  ERROR    output channel "Web" builds a URI from the cover date and this version has none: invalid
+
+no cover date and a format that needs none
+  format   %{categories}/%{slug}
+  category /features/film/
+  slug     "about-us" (use_slug=true)
+  cover    ""
+  uri      /features/film/about-us
+  file     /features/film/about-us/index.html
+
+lower case
+  format   %{categories}/%{slug}
+  category /Features/
+  slug     "A-Story" (use_slug=true)
+  cover    ""
+  uri      /features/a-story
+  file     /features/a-story/index.html
+
+upper case
+  format   %{categories}/%{slug}
+  category /features/
+  slug     "a-story" (use_slug=true)
+  cover    ""
+  uri      /FEATURES/A-STORY
+  file     /FEATURES/A-STORY/index.html
+
+a literal path with no category token
+  format   /archive/%Y/%{slug}
+  category /features/film/
+  slug     "a-story" (use_slug=true)
+  cover    "2026-03-01"
+  uri      /archive/2026/a-story
+  file     /archive/2026/a-story/index.html
+
+a slug with a slash in it
+  format   %{categories}/%Y/%m/%d/%{slug}
+  category /features/film/
+  slug     "a/b" (use_slug=true)
+  cover    "2026-03-01"
+  ERROR    slug "a/b": '/' makes it a different address: invalid
+

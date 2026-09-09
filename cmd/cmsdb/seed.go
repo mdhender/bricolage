@@ -36,17 +36,45 @@ const (
 	DefaultSiteDomain = "htmx-app.localhost"
 )
 
+// DefaultOutputChannelName is the output channel seed creates (DESIGN.md 5.3).
+//
+// A site with no output channel has no answer to "what is this document's
+// address", which is the question M7 exists to answer, so a seeded system with
+// none would be a system where the milestone's own command prints a refusal.
+// One channel, the web, with the URI format a newsroom expects: the section,
+// the date, the slug.
+//
+// use_slug is on. It is off in the schema's DEFAULT because a channel that
+// does not use one is a legitimate configuration; it is on here because a URI
+// format ending in %{slug} with slugs turned off produces the same address for
+// every story published on a given day, and a starting point that collides is
+// not a starting point.
+const (
+	DefaultOutputChannelName = "Web"
+)
+
 // DefaultElementTypeKey is the element type seed creates (DESIGN.md 5.2).
 //
 // Every document points at one, so without it "earl doc create" has nothing to
-// name and a freshly seeded database cannot hold a document. Its schema is an
-// empty field list: M3 stores the schema and does not yet validate content
-// against it (PLAN.md M3, "Schema"), and an empty declaration is the honest
-// starting point rather than a set of fields nobody asked for.
+// name and a freshly seeded database cannot hold a document.
+//
+// Its schema declares two fields as of M7, where M3 declared none. The reason
+// is that M7 validates a check-in against the schema (PLAN.md M7
+// acceptance 5), and an element type declaring no fields declares that a
+// document of that type carries none -- which would refuse every check-in
+// carrying a body. An empty field list was the honest starting point while
+// nothing read it; a starting point that refuses the first thing anybody does
+// is not.
+//
+// Neither field is required, deliberately. "cmsdb seed" produces a system
+// somebody is about to explore, and a required field turns "earl doc create
+// --title X" followed by a check-in into a refusal before they have seen
+// anything work. An installation that wants one says so with
+// "earl element-type update".
 const (
 	DefaultElementTypeKey    = "story"
 	DefaultElementTypeName   = "Story"
-	DefaultElementTypeSchema = `{"fields":[]}`
+	DefaultElementTypeSchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"}]}`
 )
 
 // seedRole is one role and the single grant it carries.
@@ -184,6 +212,52 @@ func seed(ctx context.Context, db *store.DB, out io.Writer) error {
 		return err
 	}
 
+	site, err := db.SiteByDomain(ctx, DefaultSiteDomain)
+	if err != nil {
+		return err
+	}
+
+	// The root category is created in the same transaction as its site, by
+	// store.CreateSite, and for sites that predate M7 by migration 0009. Seed
+	// reports it rather than creating it, the way it reports the workflow: a
+	// thing written down twice is a thing that drifts.
+	root, err := db.CategoryByPath(ctx, site, domain.RootPath)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("site %d has no root category; every site gets one when it is created, so a site with none has been edited by hand", site)
+		}
+		return err
+	}
+	fmt.Fprintf(out, "category: %s (%s, the root of %s)\n", root.Path, root.Name, DefaultSiteDomain)
+
+	switch oc, err := db.OutputChannelByName(ctx, site, DefaultOutputChannelName); {
+	case err == nil:
+		fmt.Fprintf(out, "output channel: %s (already present, %s)\n", oc.Name, oc.URIFormat)
+	case errors.Is(err, domain.ErrNotFound):
+		uid, err := ids.New(now)
+		if err != nil {
+			return err
+		}
+		oc, err := db.CreateOutputChannel(ctx, domain.OutputChannel{
+			UID:            uid,
+			SiteID:         site,
+			Name:           DefaultOutputChannelName,
+			Protocol:       domain.DefaultProtocol,
+			Filename:       domain.DefaultFilename,
+			FileExt:        domain.DefaultFileExt,
+			URIFormat:      domain.DefaultURIFormat,
+			FixedURIFormat: domain.DefaultFixedURIFormat,
+			UseSlug:        true,
+			URICase:        domain.URICaseLower,
+		}, domain.Event{})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "output channel: %s (%s)\n", oc.Name, oc.URIFormat)
+	default:
+		return err
+	}
+
 	switch et, err := db.ElementTypeByKeyName(ctx, DefaultElementTypeKey); {
 	case err == nil:
 		fmt.Fprintf(out, "element type: %s (already present)\n", et.KeyName)
@@ -298,9 +372,14 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 		State:         wf.InitialState,
 		Title:         demoTitle,
 		Slug:          "quick-brown-fox",
-		Content:       `{"body":"The quick brown fox jumps over the lazy dog."}`,
-		CreatedBy:     author.ID,
-		CreatedAt:     now,
+		// A cover date, because the default output channel's URI format
+		// carries %Y/%m/%d and a document with none has no address to show
+		// (domain.BuildURI). The sample exists so that somebody can watch the
+		// system work, and "earl doc uris" is half of what M7 added.
+		CoverDate: now.UTC().Format("2006-01-02"),
+		Content:   `{"body":"The quick brown fox jumps over the lazy dog."}`,
+		CreatedBy: author.ID,
+		CreatedAt: now,
 		Event: domain.Event{
 			Type:    events.DocumentCreated,
 			ActorID: author.ID,
@@ -314,7 +393,25 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "demo: %s (%s, an open working draft in %q)\n", demoTitle, doc.UID, doc.State)
+	// Filed in the site's root, so that the sample has an address. A document
+	// filed nowhere has none, which is the honest answer and a poor
+	// demonstration.
+	root, err := db.CategoryByPath(ctx, site, domain.RootPath)
+	if err != nil {
+		return err
+	}
+	if _, err := db.SetDocumentCategories(ctx, doc.ID, []int64{root.ID}, now, domain.Event{
+		Type:    events.DocumentFiled,
+		ActorID: author.ID,
+		Payload: map[string]any{
+			"uid": doc.UID, "primary": root.Path, "categories": []string{root.Path}, "seed": true,
+		},
+		OccurredAt: now,
+	}); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "demo: %s (%s, an open working draft in %q, filed at %s)\n",
+		demoTitle, doc.UID, doc.State, root.Path)
 
 	return seedDemoJob(ctx, db, out, author.ID, now)
 }

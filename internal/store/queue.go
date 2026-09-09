@@ -83,9 +83,7 @@ func documentQuerySQL(q DocumentQuery) (string, func(*sqlite.Stmt)) {
 	}
 
 	query := `
-		SELECT ` + documentColumns + `
-		  FROM documents d
-		  JOIN element_types et ON et.id = d.element_type_id`
+		SELECT ` + documentColumns + documentFrom
 	if len(where) > 0 {
 		query += "\n\t\t WHERE " + strings.Join(where, "\n\t\t   AND ")
 	}

@@ -18,12 +18,18 @@ import (
 // returned values: an operation that does not write its event is not finished
 // (invariant 7, PLAN.md M3 acceptance 6).
 
+// storySchema is the schema the harness's element type declares, and it is
+// the one "cmsdb seed" writes: a body and a deck, neither required. M7
+// validates a check-in against this (PLAN.md M7 acceptance 5), so a fixture
+// declaring no fields would refuse every document these tests check in.
+const storySchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"}]}`
+
 // elementType gives the harness the element type every document needs.
 func (h *harness) elementType(t *testing.T, keyName, kind string) domain.ElementType {
 	t.Helper()
 	et, err := h.db.CreateElementType(t.Context(), store.NewElementType{
 		UID: ids.MustNew(start), KeyName: keyName, Name: keyName, Kind: kind,
-		TopLevel: true, Schema: "{}", CreatedAt: start,
+		TopLevel: true, Schema: storySchema, CreatedAt: start,
 	})
 	if err != nil {
 		t.Fatalf("CreateElementType: %v", err)

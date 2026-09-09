@@ -219,7 +219,16 @@ func changedFields(before, after domain.Version) []string {
 }
 
 // Checkin closes the working draft, which becomes an immutable version
-// (PLAN.md M3 acceptance 1).
+// (PLAN.md M3 acceptance 1), validating its content against the element type's
+// schema first (PLAN.md M7 acceptance 5).
+//
+// This is the moment the schema is enforced and it is the only one. A working
+// draft may be invalid -- DESIGN.md 5.2 says so in as many words, and the
+// reason is that refusing a half-finished paragraph is how a writer loses a
+// sentence -- and a checked-in version may not, because a checked-in version
+// is what a publish pins and a renderer walks. The refusal is a 422 naming
+// every offending field rather than the first, so that a person fixing a
+// document gets the list and not a sequence of round trips.
 func (s *Service) Checkin(ctx context.Context, actor domain.Identity, uid, note string) (DocumentView, error) {
 	doc, err := s.mayEdit(ctx, actor, uid)
 	if err != nil {
@@ -234,6 +243,14 @@ func (s *Service) Checkin(ctx context.Context, actor domain.Identity, uid, note 
 		if errors.Is(err, domain.ErrNotFound) {
 			return DocumentView{}, fmt.Errorf("document %s is not checked out: %w", uid, domain.ErrConflict)
 		}
+		return DocumentView{}, err
+	}
+
+	et, err := s.db.ElementTypeByKeyName(ctx, doc.ElementTypeKey)
+	if err != nil {
+		return DocumentView{}, err
+	}
+	if err := domain.ValidateContent(&et, draft.Content); err != nil {
 		return DocumentView{}, err
 	}
 

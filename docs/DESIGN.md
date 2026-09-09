@@ -366,11 +366,29 @@ allowed child element types). `document_versions.content` holds a tree that must
 validate against it. Validation is a pure function in `domain`:
 
 ```go
-func ValidateContent(et *ElementType, content json.RawMessage) []FieldError
+func ValidateContent(et *ElementType, content string) error   // a *ContentError, carrying []FieldError
 ```
 
+It returns an error rather than a slice, and the error carries the field list.
+The reason is the one mapping function at the transport edge (§14): a
+`*ContentError` answers to `ErrInvalid`, so it becomes a 422 through the same
+`statusFor` every other refusal goes through, and `internal/api` reads its
+fields into the problem document's `errors` member. A bare `[]FieldError` would
+need a second path from "this content is wrong" to "this is a 422", and a second
+path is a second place to disagree about what a status code means. `content` is
+a string rather than a `json.RawMessage` for the reason `Version.Content` is
+(§5.1): a `[]byte` in a domain type is a `[]byte` somebody mutates.
+
 Validate on check-in, not on every keystroke. A working draft may be invalid; a
-checked-in version may not.
+checked-in version may not. The shape check that runs on every draft write is a
+separate function, `ValidateContentShape`, and all it refuses is content no
+schema validator could parse.
+
+**An element type declaring no fields declares that a document of that type
+carries none**, and content carrying one is refused. That is why `cmsdb seed`
+writes a schema with a body and a deck in it rather than an empty field list: an
+empty declaration that accepted anything would be a schema saying one thing
+while the system does another, which is the shape invariant 6 is about.
 
 ### 5.3 Sites, categories, output channels
 
@@ -404,6 +422,30 @@ and the root is `/`. Two things depend on it: URI construction, and permission
 scope matching by subtree prefix (§7). Rebuild descendants' paths when a
 category moves; do it in one statement and cover it with a test.
 
+Three rules make the arithmetic total, and `internal/domain` enforces them as
+pure functions:
+
+- **`directory` is empty for the root and only for the root**, so
+  `path = parent.path || directory || '/'` holds for every row without a special
+  case.
+- **`parent_id` is NULL for the root of a site and for no other row.**
+- **Every site has exactly one root category, created in the same transaction as
+  the site**, by `store.CreateSite` — and by migration 0009 for the sites that
+  predate it. `UNIQUE (site_id, path)` is what makes "exactly one" true, since
+  the root's path is `/` on every site. A document filed nowhere in particular
+  is filed at `/`; a URI built from a site with no root would have no leading
+  slash to start from.
+
+The subtree prefix test is `SUBSTR(path, 1, LENGTH(:prefix)) = :prefix` and not
+`LIKE :prefix || '%'`. A directory name may contain `%` or `_`, which `LIKE`
+reads as wildcards, and escaping the pattern is a thing to get right every time
+the query is written rather than a thing that cannot be got wrong.
+
+Exactly one primary category per document, enforced by a partial unique index on
+`document_categories(document_id) WHERE primary_cat = 1`. The primary is the one
+the URI is built from; without the index "the" primary is an arbitrary row and
+the failure looks like a URI that moves on its own.
+
 Output channels carry the URI format:
 
 ```sql
@@ -419,6 +461,8 @@ CREATE TABLE output_channels (
   fixed_uri_format TEXT    NOT NULL,
   use_slug         INTEGER NOT NULL DEFAULT 0,
   uri_case         TEXT    NOT NULL DEFAULT 'mixed'
+      CHECK (uri_case IN ('mixed', 'lower', 'upper')),
+  UNIQUE (site_id, name)
 ) STRICT;
 ```
 
@@ -428,6 +472,34 @@ layouts cannot express them. Write a small strftime formatter in `domain`; do
 not try to translate formats into Go layouts. The category segment substitution
 deliberately consumes the following slash, because category paths already end in
 one.
+
+`fixed_uri_format` is the format used for a document whose element type sets
+`fixed_uri`: a page that lives at one address forever rather than at one derived
+from the date it was published. It is the column that gives `element_types.
+fixed_uri` a meaning.
+
+Three decisions the formatter makes, each of which could have gone the other
+way:
+
+- **An unimplemented conversion is an error, not a passthrough.** A URI format
+  is configuration a person typed, and emitting the two characters `%Q` into
+  every URI on the site is the failure mode where nobody notices for a month.
+  The formats are compiled when an output channel is written, so a typo is
+  refused at configuration time rather than during a publish.
+- **A format that reads the clock, against a version with no cover date, is a
+  refusal.** It is not an error in itself to have no cover date — a fixed-URI
+  page usually has none, and its format has no date conversion, so it builds.
+  What is refused is the combination, and it is refused per output channel:
+  "this story has no cover date and the news channel needs one" is a fact about
+  one channel, and the others still have answers.
+- **The braced substitution consumes the following slash when its value already
+  ends in one, or is empty.** That is the general rule the category case is an
+  instance of, and it is what makes `%{categories}/%Y` produce `/features/2026`
+  rather than `/features//2026`. A slug that has a value keeps the slash after
+  it, because joining it to the next segment would be a different address.
+
+`domain.BuildURI(doc, version, category, oc)` is the whole of it and it is pure,
+which is what lets a table of golden vectors be the test.
 
 ### 5.4 Workflow definition
 
@@ -538,6 +610,11 @@ CREATE TABLE comments (
   created_at  TEXT    NOT NULL
 ) STRICT;
 
+-- Created by migration 0009, because grants.collection_id needs a table to
+-- point at. There is no API for writing one yet: internal/authz reads the
+-- column and a grant naming a collection is refused by the foreign key unless
+-- it exists, so what is missing is a way for a person to create one rather than
+-- an enforcement path.
 CREATE TABLE collections (
   id INTEGER PRIMARY KEY, uid TEXT NOT NULL UNIQUE,
   slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL
@@ -736,6 +813,10 @@ foreign key to a column that already exists, and a scope column with no
 referential integrity is the rule column nothing reads. `domain.Scope` carries
 all nine from the first commit and `authz.Resolve` evaluates all nine, so the
 resolver does not change when a column lands.
+
+All nine are present as of migration 0009, and the resolver did not change
+once — only the projection and the row scan in `internal/store` did, which is
+what carrying the whole scope from the first commit was for.
 
 Privilege scale, kept from Bricolage because it is well chosen:
 
@@ -1385,7 +1466,7 @@ GET    /api/v1/me
 GET    /api/v1/documents                         list; filters as query params
 POST   /api/v1/documents                         create
 GET    /api/v1/documents/{uid}
-PATCH  /api/v1/documents/{uid}                   draft metadata: title, slug, cover date, categories
+PATCH  /api/v1/documents/{uid}                   draft metadata: title, slug, cover date
 POST   /api/v1/documents/{uid}/checkout
 DELETE /api/v1/documents/{uid}/checkout        release the lease, keeping the draft
 POST   /api/v1/documents/{uid}/checkin
@@ -1401,6 +1482,9 @@ POST   /api/v1/documents/{uid}/assignment        {"user":"...","due_at":"..."}
 DELETE /api/v1/documents/{uid}/assignment
 PUT    /api/v1/documents/{uid}/due               {"at":"2026-03-01"}
 DELETE /api/v1/documents/{uid}/due
+GET    /api/v1/documents/{uid}/categories
+PUT    /api/v1/documents/{uid}/categories        {"categories":["/features/film/","/features/"]}
+GET    /api/v1/documents/{uid}/uris              the address in every output channel
 POST   /api/v1/documents/{uid}/approvals
 DELETE /api/v1/documents/{uid}/approvals/current
 GET    /api/v1/documents/{uid}/comments
@@ -1421,9 +1505,30 @@ POST   /api/v1/notifications/{id}/read
 POST   /api/v1/grants                            write a grant; refuses an escalation (§7.3)
 POST   /api/v1/users/{uid}/roles                 assign a role; the same refusal applies
 
-GET/POST/PATCH  /api/v1/sites, /categories, /output-channels,
-                /element-types, /workflows, /roles, /grants, /users
+GET    /api/v1/sites
+GET    /api/v1/categories?site=N                 POST, and GET/PATCH/DELETE /{uid}
+GET    /api/v1/output-channels[?site=N]          POST, and GET/PATCH /{uid}
+GET    /api/v1/element-types                     POST, and GET/PATCH /{key}
+GET    /api/v1/workflows
 ```
+
+There is deliberately **no DELETE** on an output channel or an element type.
+Deleting one would orphan every document that points at it, and the schema says
+so with a foreign key rather than with a cascade. Deleting a category is allowed
+and refuses a category with children or with documents filed in it, for the same
+reason: cascading would silently unfile documents — changing their URIs and
+stopping their category-scoped grants matching — and the person who deleted a
+section would find out from a reader.
+
+**A category is named by its path wherever a person types one.** `/features/film/`
+is what a grant carries and what a URI is built from, and `UNIQUE (site_id,
+path)` makes it a lookup key on one site. The uid is still what a mutation
+addresses (invariant 10). `POST /grants` therefore takes `"category":
+"/features/film/"` and not an identifier, and the server resolves it to the row:
+a scope carries both the id and the path — the resolver matches a subtree by
+prefix on the path and performs no I/O (§7.2) — and taking both from the client
+is what lets them disagree. A grant whose path names a different row from its id
+matches the wrong documents with nothing to notice.
 
 There is deliberately **no route that creates a job.** Nothing a person does is
 "enqueue a job": they publish something, and the operation that publishes it
@@ -1444,14 +1549,29 @@ tells you what the state machine permits and why, `POST` performs one. It makes
 the workflow visible in the API instead of hiding it behind `PATCH state=`.
 Never expose a plain `PATCH` that sets `state`.
 
-Assignment and the due date are subresources for the same reason, and they are
-deliberately *not* fields on `PATCH /documents/{uid}`. That route writes the
-working draft and needs the edit lease; who is doing a piece of work and when it
-is wanted are properties of the document row, and requiring a checkout to set a
-deadline would mean taking the draft away from the person the deadline is for.
-They are two subresources rather than one because a deadline belongs to the work
-rather than to whoever is holding it: putting a document down does not make it
-less late, so `DELETE .../assignment` leaves `due_at` alone.
+Assignment, the due date, and the categories a document is filed in are
+subresources for the same reason, and they are deliberately *not* fields on
+`PATCH /documents/{uid}`. That route writes the working draft and needs the edit
+lease; who is doing a piece of work, when it is wanted, and where it is filed are
+properties of the document row, and requiring a checkout to set a deadline would
+mean taking the draft away from the person the deadline is for. Assignment and
+the due date are two subresources rather than one because a deadline belongs to
+the work rather than to whoever is holding it: putting a document down does not
+make it less late, so `DELETE .../assignment` leaves `due_at` alone.
+
+Categories were listed on `PATCH /documents/{uid}` in an earlier draft of this
+section and are not any more, for the lease reason above: `document_categories`
+rows point at the document rather than at a version, so there is no draft copy of
+a filing to protect, and requiring a checkout to refile a story would make the
+most ordinary bulk operation a newsroom performs — moving a section — impossible
+while anybody was writing in it. `PUT` rather than `POST` because it replaces:
+"these are the categories" is the request a client makes, and the first path
+given is the primary one, so a list and a pointer into it cannot disagree.
+
+`GET /documents/{uid}/uris` is not a resource in the CRUD sense and is here
+anyway. A URI format is configuration somebody types and gets wrong, and the
+only alternative to showing them what it produces is publishing something to
+find out.
 
 `{"user":"me"}` and `?assignee=me` name the caller, which saves a client a round
 trip to `/me` and is what a saved queue's `assignee: me` resolves to per request.

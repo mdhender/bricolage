@@ -122,6 +122,12 @@ type Document struct {
 	// (invariant 10).
 	ElementTypeKey string
 
+	// ElementTypeFixedURI is the element type's fixed_uri flag, joined in for
+	// the same reason: BuildURI needs to know which of the output channel's
+	// two formats applies, and a pure function cannot go and look
+	// (DESIGN.md 5.3).
+	ElementTypeFixedURI bool
+
 	// WorkflowID is the editorial process this document is in, and State is
 	// where it has got to. The pair is a composite foreign key to
 	// workflow_states, so a document can only ever name a state its own
@@ -143,8 +149,17 @@ type Document struct {
 
 	Lock Lock
 
+	// CategoryID is the primary category the document is filed in, or 0 when
+	// it is filed nowhere, and CategoryPath is that category's materialised
+	// path (PLAN.md M7). The path is joined in by the store because the
+	// authorization resolver is pure and matches a category-scoped grant by
+	// prefix on it (DESIGN.md 7.1), and because BuildURI expands
+	// %{categories} from it.
+	CategoryID   int64
+	CategoryPath string
+
 	// CurrentVersionID is the newest version row, checked in or not.
-	// LiveVersionID is the version that is published, set by M7.
+	// LiveVersionID is the version that is published, set by M8.
 	CurrentVersionID int64
 	LiveVersionID    int64
 
@@ -192,19 +207,22 @@ func (v Version) IsDraft() bool { return v.CheckedInAt.IsZero() }
 // Subject renders the document as the thing a privilege is resolved against
 // (DESIGN.md 7.2).
 //
-// The workflow and the state arrive with M4, and with them the grants.state
-// column that has been resolvable since M2 finally resolves against something
-// real: a grant scoped to state = "published" now matches exactly the
-// documents that are. Category is still absent because M7 creates categories;
-// the resolver reads it as unconstrained, and a grant that names one simply
-// does not match a document that has none.
+// The workflow and the state arrived with M4, and with them the grants.state
+// column that had been resolvable since M2 finally resolved against something
+// real. M7 completes it: the category path is the last dimension the resolver
+// carried without a column behind it, and a category_deep grant on /features
+// now covers /features/film because this is where the path it prefix-matches
+// comes from. A document filed nowhere has an empty path, and a grant that
+// names a category does not match it -- which is the right answer rather than
+// a permissive one.
 func (d Document) Subject() Subject {
 	return Subject{
-		SiteID:     d.SiteID,
-		DocKind:    d.Kind,
-		WorkflowID: d.WorkflowID,
-		State:      d.State,
-		DocumentID: d.ID,
+		SiteID:       d.SiteID,
+		DocKind:      d.Kind,
+		CategoryPath: d.CategoryPath,
+		WorkflowID:   d.WorkflowID,
+		State:        d.State,
+		DocumentID:   d.ID,
 	}
 }
 
@@ -241,7 +259,7 @@ func (n NewDocument) Validate() error {
 	if strings.TrimSpace(n.Title) == "" {
 		return fmt.Errorf("document: a title is required: %w", ErrInvalid)
 	}
-	return ValidateContent(n.Content)
+	return ValidateContentShape(n.Content)
 }
 
 // DraftUpdate is a change to the open working draft. Every field is a pointer
@@ -276,7 +294,7 @@ func (u DraftUpdate) Apply(v Version) (Version, error) {
 		v.CoverDate = *u.CoverDate
 	}
 	if u.Content != nil {
-		if err := ValidateContent(*u.Content); err != nil {
+		if err := ValidateContentShape(*u.Content); err != nil {
 			return v, err
 		}
 		v.Content = *u.Content
@@ -284,16 +302,17 @@ func (u DraftUpdate) Apply(v Version) (Version, error) {
 	return v, nil
 }
 
-// ValidateContent reports whether s is storable in document_versions.content:
-// a JSON object, or empty, which the schema's default renders as "{}".
+// ValidateContentShape reports whether s is storable in
+// document_versions.content: a JSON object, or empty, which the schema's
+// default renders as "{}".
 //
-// The element type's field definitions are not consulted. That validation is
-// the ValidateContent(et, content) of DESIGN.md 5.2 and arrives with the
-// milestone that has an element type schema worth validating against;
-// PLAN.md M3 stores the schema and says in as many words that it is not yet
-// validated. What this function refuses is content no later validator could
-// even parse.
-func ValidateContent(s string) error {
+// It is the shape check, and it is separate from ValidateContent, which is the
+// element type's field definitions (DESIGN.md 5.2). The two run at different
+// moments and that is the point: a working draft may be invalid against its
+// schema and is written anyway, because refusing a half-finished paragraph is
+// how a writer loses a sentence. What this refuses is content no validator
+// could even parse.
+func ValidateContentShape(s string) error {
 	if strings.TrimSpace(s) == "" {
 		return nil
 	}

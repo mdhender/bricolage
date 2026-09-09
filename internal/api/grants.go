@@ -22,15 +22,26 @@ type grantRequest struct {
 	Role      string `json:"role"`
 	Privilege string `json:"privilege"`
 
-	Site         *int64  `json:"site,omitempty"`
-	DocKind      *string `json:"doc_kind,omitempty"`
-	State        *string `json:"state,omitempty"`
-	Category     *int64  `json:"category,omitempty"`
-	CategoryPath *string `json:"category_path,omitempty"`
+	Site    *int64  `json:"site,omitempty"`
+	DocKind *string `json:"doc_kind,omitempty"`
+	State   *string `json:"state,omitempty"`
+
+	// Category is the category's path -- "/features/film/" -- and not an
+	// identifier. A scope carries both the id and the path, because a subtree
+	// match is a prefix test on the path and the resolver performs no I/O
+	// (DESIGN.md 7.2); taking both from the client would let them disagree,
+	// and a grant whose path names a different row from its id is a grant that
+	// matches the wrong documents. The service resolves one into the other, so
+	// there is one source for the pair.
+	//
+	// It needs a site, because a path names one row per site and a path with
+	// no site names as many rows as there are sites.
+	Category     *string `json:"category,omitempty"`
 	CategoryDeep *bool   `json:"category_deep,omitempty"`
-	Workflow     *int64  `json:"workflow,omitempty"`
-	Collection   *int64  `json:"collection,omitempty"`
-	Document     *int64  `json:"document,omitempty"`
+
+	Workflow   *int64 `json:"workflow,omitempty"`
+	Collection *int64 `json:"collection,omitempty"`
+	Document   *int64 `json:"document,omitempty"`
 }
 
 // createGrant is POST /api/v1/grants.
@@ -63,21 +74,24 @@ func (h *Handler) createGrant(w http.ResponseWriter, r *http.Request, identity d
 		deep = *req.CategoryDeep
 	}
 
-	g, err := h.svc.CreateGrant(r.Context(), identity, service.GrantRequest{
+	in := service.GrantRequest{
 		RoleSlug:  req.Role,
 		Privilege: privilege,
 		Scope: domain.Scope{
 			SiteID:       req.Site,
 			DocKind:      req.DocKind,
 			State:        req.State,
-			CategoryID:   req.Category,
-			CategoryPath: req.CategoryPath,
 			CategoryDeep: deep,
 			WorkflowID:   req.Workflow,
 			CollectionID: req.Collection,
 			DocumentID:   req.Document,
 		},
-	})
+	}
+	if req.Category != nil {
+		in.CategoryPath = *req.Category
+	}
+
+	g, err := h.svc.CreateGrant(r.Context(), identity, in)
 	if err != nil {
 		h.writeError(w, r, err)
 		return

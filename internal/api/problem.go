@@ -109,6 +109,18 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		p.Guard = string(g)
 	}
 
+	// Content that does not match its element type names every offending
+	// field (PLAN.md M7 acceptance 5). It is filled in here for the same
+	// reason the guard is: this is the one function that turns an error into a
+	// response, and a second place that knew about field errors would be a
+	// second place to forget.
+	if fields, ok := domain.FieldErrorsOf(err); ok {
+		p.Errors = make([]FieldError, 0, len(fields))
+		for _, f := range fields {
+			p.Errors = append(p.Errors, FieldError{Field: f.Field, Message: f.Message})
+		}
+	}
+
 	switch {
 	case status < http.StatusInternalServerError:
 		p.Detail = err.Error()

@@ -145,6 +145,48 @@ const (
 	// queue. The payload records the failure it is being retried out of, so
 	// that the reason survives the columns the retry clears.
 	JobRetried = "job.retried"
+
+	// The structure events (PLAN.md M7). Categories, output channels and
+	// element types are configuration rather than content, and every one of
+	// these is a state change that a document's address or validity depends
+	// on -- which is exactly why they are events. "Why did every URL under
+	// /features change last Tuesday" is a question about the category tree,
+	// and without these the answer is not in the database.
+
+	// CategoryCreated is written when a category comes into existence. A
+	// site's root is not one of them: it is created in the same transaction
+	// as its site and has no separate existence to record.
+	CategoryCreated = "category.created"
+
+	// CategoryMoved is written when a category is moved or renamed. The
+	// payload carries the old path and the new one and how many rows the
+	// subtree rewrite touched, because every URI under it has just changed
+	// and the count is what says how much.
+	CategoryMoved = "category.moved"
+
+	// CategoryDeleted is written before the row goes, against the id it names,
+	// so that a deleted category still has a history.
+	CategoryDeleted = "category.deleted"
+
+	// DocumentFiled is written when a document's categories change. It names
+	// the primary category, because that is the one the URI is built from:
+	// refiling a story moves its address, and this is the line that says when.
+	DocumentFiled = "document.filed"
+
+	// OutputChannelCreated and OutputChannelUpdated record a change to where
+	// content goes and what its address looks like. The payload carries the
+	// URI formats verbatim: a format edited last month is what last month's
+	// addresses were built from, and a configuration row shows only what it
+	// says today.
+	OutputChannelCreated = "output_channel.created"
+	OutputChannelUpdated = "output_channel.updated"
+
+	// ElementTypeCreated and ElementTypeUpdated record a change to what fields
+	// a document carries. The payload names the fields rather than carrying
+	// the whole schema, for the reason a draft update names fields and not
+	// contents.
+	ElementTypeCreated = "element_type.created"
+	ElementTypeUpdated = "element_type.updated"
 )
 
 // names are the display names the admin screens and the CLI show. A type with
@@ -174,6 +216,15 @@ var names = map[string]string{
 	JobFailed:    "Job attempt failed",
 	JobAbandoned: "Job abandoned",
 	JobRetried:   "Job retried",
+
+	CategoryCreated:      "Category created",
+	CategoryMoved:        "Category moved",
+	CategoryDeleted:      "Category deleted",
+	DocumentFiled:        "Filed",
+	OutputChannelCreated: "Output channel created",
+	OutputChannelUpdated: "Output channel updated",
+	ElementTypeCreated:   "Element type created",
+	ElementTypeUpdated:   "Element type updated",
 }
 
 // All returns every event type this binary knows, in a stable order.
@@ -200,6 +251,14 @@ func All() []string {
 		JobFailed,
 		JobAbandoned,
 		JobRetried,
+		CategoryCreated,
+		CategoryMoved,
+		CategoryDeleted,
+		DocumentFiled,
+		OutputChannelCreated,
+		OutputChannelUpdated,
+		ElementTypeCreated,
+		ElementTypeUpdated,
 	}
 }
 

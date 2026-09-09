@@ -65,8 +65,9 @@ func New(deps Deps) *Handler {
 // M2 registered the session and identity routes and the grant-writing route
 // that carries the anti-escalation check; M3 added the document, version,
 // diff, and history routes, M4 the transitions, M5 assignment, due dates, and
-// the queues, and M6 the job queue. The publishing routes arrive with the
-// milestones that implement them; a route registered before its service
+// the queues, M6 the job queue, and M7 sites, categories, output channels,
+// element types, and the URIs they produce. The publishing routes arrive with
+// the milestones that implement them; a route registered before its service
 // method exists is a 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
 	h := New(deps)
@@ -143,7 +144,45 @@ func Register(mux Mux, deps Deps) {
 	handle("GET "+Prefix+"jobs", h.authenticated(h.listJobs))
 	handle("POST "+Prefix+"jobs/{uid}/retry", h.authenticated(h.retryJob))
 
+	// Sites, categories, output channels, and element types (PLAN.md M7).
+	// DESIGN.md 12's last line names all four as ordinary CRUD collections and
+	// this is them, less the parts nothing needs yet: there is no DELETE on an
+	// output channel or an element type, because deleting one would orphan
+	// every document that points at it and the schema says so with a foreign
+	// key rather than with a cascade.
+	//
+	// A category is addressed by uid, like everything else the API mutates
+	// (invariant 10), and named by path everywhere a person types one:
+	// "/features/film/" is what a grant carries and what a URI is built from,
+	// and UNIQUE (site_id, path) is what makes it a lookup key.
+	handle("GET "+Prefix+"sites", h.authenticated(h.listSites))
+	handle("GET "+Prefix+"categories", h.authenticated(h.listCategories))
+	handle("POST "+Prefix+"categories", h.authenticated(h.createCategory))
+	handle("GET "+Prefix+"categories/{uid}", h.authenticated(h.showCategory))
+	handle("PATCH "+Prefix+"categories/{uid}", h.authenticated(h.patchCategory))
+	handle("DELETE "+Prefix+"categories/{uid}", h.authenticated(h.deleteCategory))
+
+	handle("GET "+Prefix+"output-channels", h.authenticated(h.listOutputChannels))
+	handle("POST "+Prefix+"output-channels", h.authenticated(h.createOutputChannel))
+	handle("GET "+Prefix+"output-channels/{uid}", h.authenticated(h.showOutputChannel))
+	handle("PATCH "+Prefix+"output-channels/{uid}", h.authenticated(h.patchOutputChannel))
+
+	// Where a document is filed, and the addresses that follow from it.
+	//
+	// Categories are a subresource rather than a field on PATCH
+	// /documents/{uid}, which is a departure from DESIGN.md 12's original list
+	// and the same one M5 made for the due date: that route writes the working
+	// draft and needs the edit lease, and document_categories rows point at
+	// the document rather than at a version, so there is no draft copy of a
+	// filing to protect. DESIGN.md 12 has been corrected to match.
+	handle("GET "+Prefix+"documents/{uid}/categories", h.authenticated(h.listDocumentCategories))
+	handle("PUT "+Prefix+"documents/{uid}/categories", h.authenticated(h.fileDocument))
+	handle("GET "+Prefix+"documents/{uid}/uris", h.authenticated(h.documentURIs))
+
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
+	handle("POST "+Prefix+"element-types", h.authenticated(h.createElementType))
+	handle("GET "+Prefix+"element-types/{key}", h.authenticated(h.showElementType))
+	handle("PATCH "+Prefix+"element-types/{key}", h.authenticated(h.patchElementType))
 	handle("GET "+Prefix+"workflows", h.authenticated(h.listWorkflows))
 }
 

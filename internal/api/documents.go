@@ -37,6 +37,13 @@ type documentResponse struct {
 	Workflow string `json:"workflow,omitempty"`
 	State    string `json:"state,omitempty"`
 
+	// Category is the primary category's path, and empty when the document is
+	// filed nowhere (PLAN.md M7). It is the path rather than the uid because
+	// the path is what a person reads, what a grant carries, and what the URI
+	// is built from; the full filing, including the categories a document
+	// also appears in, is its own subresource.
+	Category string `json:"category,omitempty"`
+
 	// CheckedOutBy is the uid of whoever holds a live lease, and empty when
 	// nobody does. An expired lease is nobody's, so it is reported as
 	// unlocked: the API answers the question the editor is asking, which is
@@ -117,6 +124,7 @@ func newDocumentResponse(d domain.Document, v domain.Version, now time.Time, who
 		ElementType: d.ElementTypeKey,
 		Site:        d.SiteID,
 		State:       d.State,
+		Category:    d.CategoryPath,
 		CreatedAt:   d.CreatedAt,
 		UpdatedAt:   d.UpdatedAt,
 		Version:     newVersionResponse(v),
@@ -437,14 +445,33 @@ func (h *Handler) documentEvents(w http.ResponseWriter, r *http.Request, identit
 }
 
 // elementTypeResponse is what a client needs to name an element type when
-// creating a document. Writing them is an administration surface that arrives
-// with the milestone that has a schema worth editing.
+// creating a document, and what an administrator needs to edit one.
+//
+// fixed_uri is here as of M7 because it decides which of an output channel's
+// two URI formats a document of this type uses, and a client showing an
+// address has to be able to say why it looks like that.
 type elementTypeResponse struct {
-	KeyName  string `json:"key_name"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	TopLevel bool   `json:"top_level"`
-	Schema   string `json:"schema"`
+	UID       string `json:"uid"`
+	KeyName   string `json:"key_name"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"`
+	TopLevel  bool   `json:"top_level"`
+	FixedURI  bool   `json:"fixed_uri"`
+	Paginated bool   `json:"paginated"`
+	Schema    string `json:"schema"`
+}
+
+func newElementTypeResponse(et domain.ElementType) elementTypeResponse {
+	return elementTypeResponse{
+		UID:       et.UID,
+		KeyName:   et.KeyName,
+		Name:      et.Name,
+		Kind:      et.Kind,
+		TopLevel:  et.TopLevel,
+		FixedURI:  et.FixedURI,
+		Paginated: et.Paginated,
+		Schema:    et.Schema,
+	}
 }
 
 func (h *Handler) listElementTypes(w http.ResponseWriter, r *http.Request, _ domain.Identity) {
@@ -455,13 +482,7 @@ func (h *Handler) listElementTypes(w http.ResponseWriter, r *http.Request, _ dom
 	}
 	out := make([]elementTypeResponse, 0, len(types))
 	for _, et := range types {
-		out = append(out, elementTypeResponse{
-			KeyName:  et.KeyName,
-			Name:     et.Name,
-			Kind:     et.Kind,
-			TopLevel: et.TopLevel,
-			Schema:   et.Schema,
-		})
+		out = append(out, newElementTypeResponse(et))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"element_types": out})
 }

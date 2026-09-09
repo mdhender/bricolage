@@ -17,6 +17,12 @@ import (
 // document shape: the refusals themselves are asserted in internal/service,
 // where the rows written can be counted.
 
+// storySchema is the schema "cmsdb seed" writes: a body and a deck, neither
+// required. A check-in is validated against it as of M7 (PLAN.md M7
+// acceptance 5), so a fixture declaring no fields would refuse every document
+// these tests check in.
+const storySchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"}]}`
+
 // docHarness is the API harness with one element type, and the site every
 // document is created on.
 func newDocAPIHarness(t *testing.T) *harness {
@@ -24,7 +30,7 @@ func newDocAPIHarness(t *testing.T) *harness {
 	h := newHarness(t)
 	if _, err := h.db.CreateElementType(t.Context(), store.NewElementType{
 		UID: ids.MustNew(start), KeyName: "story", Name: "Story",
-		Kind: domain.KindStory, TopLevel: true, Schema: "{}", CreatedAt: start,
+		Kind: domain.KindStory, TopLevel: true, Schema: storySchema, CreatedAt: start,
 	}); err != nil {
 		t.Fatalf("CreateElementType: %v", err)
 	}

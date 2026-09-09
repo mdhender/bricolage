@@ -104,18 +104,35 @@ func rolesForUser(conn *sqlite.Conn, userID int64) ([]domain.Role, error) {
 
 // grantColumns is the projection every grant read shares.
 //
-// The scope is six columns wide today: document_id arrived with M3, which
-// created the table it points at, and workflow_id with M4
-// (internal/migrate/schema/0005_workflow.sql). DESIGN.md 7 gives the scope
-// nine dimensions; the rest arrive the same way, each added by the migration
-// that creates its target table. domain.Scope and internal/authz carry all
-// nine now, so the resolver does not change when a column lands -- only this
-// projection and scanGrant do.
+// The scope is nine columns wide as of M7, which is DESIGN.md 7's full set for
+// the first time: site_id and doc_kind and state came with the identity
+// migration, document_id with M3 and workflow_id with M4, and 0009 adds
+// category_id, category_deep and collection_id with the tables they point at.
+// domain.Scope and internal/authz have carried all nine since M2, so the
+// resolver did not change as each column landed -- only this projection and
+// scanGrant did, which is what "the resolver does not change when a column
+// lands" was for.
 //
-// M4 is also when the "state" column starts resolving against something real.
-// It has been here since 0003 and matched nothing, because a document had no
-// state to compare it with; documents.state gives it one.
-const grantColumns = `id, role_id, privilege, site_id, doc_kind, workflow_id, state, document_id, created_at, created_by`
+// The category's path is joined in rather than read separately. A subtree
+// match is a prefix test on it and internal/authz performs no I/O
+// (DESIGN.md 7.2), so whoever loads the grant loads the path: a grant that
+// arrived without one would be a constraint that silently matches nothing,
+// which domain.Scope.Validate refuses for exactly that reason.
+const grantColumns = `
+	g.id AS id, g.role_id AS role_id, g.privilege AS privilege,
+	g.site_id AS site_id, g.doc_kind AS doc_kind,
+	g.category_id AS category_id, cat.path AS category_path,
+	g.category_deep AS category_deep,
+	g.workflow_id AS workflow_id, g.state AS state,
+	g.collection_id AS collection_id, g.document_id AS document_id,
+	g.created_at AS created_at, g.created_by AS created_by`
+
+// grantFrom is the FROM clause every grant read shares. The join is LEFT
+// because a category constraint is a wildcard in most grants and an unmatched
+// one must not drop the row.
+const grantFrom = `
+	  FROM grants g
+	  LEFT JOIN categories cat ON cat.id = g.category_id`
 
 // GrantsForUser returns every grant carried by every role the user holds.
 //
@@ -136,12 +153,7 @@ func (db *DB) GrantsForUser(ctx context.Context, userID int64) ([]domain.Grant, 
 func grantsForUser(conn *sqlite.Conn, userID int64) ([]domain.Grant, error) {
 	var grants []domain.Grant
 	err := run(conn, fmt.Sprintf("grants for user %d", userID), `
-		SELECT g.id AS id, g.role_id AS role_id, g.privilege AS privilege,
-		       g.site_id AS site_id, g.doc_kind AS doc_kind,
-		       g.workflow_id AS workflow_id, g.state AS state,
-		       g.document_id AS document_id,
-		       g.created_at AS created_at, g.created_by AS created_by
-		  FROM grants g
+		SELECT `+grantColumns+grantFrom+`
 		  JOIN user_roles ur ON ur.role_id = g.role_id
 		 WHERE ur.user_id = :user_id
 		 ORDER BY g.id`,
@@ -162,7 +174,7 @@ func (db *DB) GrantsForRole(ctx context.Context, roleID int64) ([]domain.Grant, 
 	var grants []domain.Grant
 	err := db.Read(ctx, func(conn *sqlite.Conn) error {
 		return run(conn, fmt.Sprintf("grants for role %d", roleID),
-			`SELECT `+grantColumns+` FROM grants WHERE role_id = :role_id ORDER BY id`,
+			`SELECT `+grantColumns+grantFrom+` WHERE g.role_id = :role_id ORDER BY g.id`,
 			func(stmt *sqlite.Stmt) { stmt.SetInt64(":role_id", roleID) },
 			func(stmt *sqlite.Stmt) error {
 				g, err := scanGrant(stmt)
@@ -189,15 +201,20 @@ func (db *DB) CreateGrant(ctx context.Context, g domain.Grant) (domain.Grant, er
 	out := g
 	err := db.Write(ctx, func(conn *sqlite.Conn) error {
 		err := run(conn, fmt.Sprintf("granting %s over %s", g.Privilege, g.Scope), `
-			INSERT INTO grants (role_id, privilege, site_id, doc_kind, workflow_id, state, document_id, created_at, created_by)
-			VALUES (:role_id, :privilege, :site_id, :doc_kind, :workflow_id, :state, :document_id, :created_at, :created_by)`,
+			INSERT INTO grants (role_id, privilege, site_id, doc_kind, category_id, category_deep,
+			                    workflow_id, state, collection_id, document_id, created_at, created_by)
+			VALUES (:role_id, :privilege, :site_id, :doc_kind, :category_id, :category_deep,
+			        :workflow_id, :state, :collection_id, :document_id, :created_at, :created_by)`,
 			func(stmt *sqlite.Stmt) {
 				stmt.SetInt64(":role_id", g.RoleID)
 				stmt.SetInt64(":privilege", int64(g.Privilege))
 				bindNullInt64(stmt, ":site_id", g.Scope.SiteID)
 				bindNullText(stmt, ":doc_kind", g.Scope.DocKind)
+				bindNullInt64(stmt, ":category_id", g.Scope.CategoryID)
+				stmt.SetBool(":category_deep", g.Scope.CategoryDeep)
 				bindNullInt64(stmt, ":workflow_id", g.Scope.WorkflowID)
 				bindNullText(stmt, ":state", g.Scope.State)
+				bindNullInt64(stmt, ":collection_id", g.Scope.CollectionID)
 				bindNullInt64(stmt, ":document_id", g.Scope.DocumentID)
 				stmt.SetText(":created_at", formatTime(g.CreatedAt))
 				if g.CreatedBy == 0 {
@@ -229,15 +246,15 @@ func scanGrant(stmt *sqlite.Stmt) (domain.Grant, error) {
 		RoleID:    stmt.GetInt64("role_id"),
 		Privilege: domain.Privilege(stmt.GetInt64("privilege")),
 		Scope: domain.Scope{
-			SiteID:     nullInt64(stmt, "site_id"),
-			DocKind:    nullText(stmt, "doc_kind"),
-			WorkflowID: nullInt64(stmt, "workflow_id"),
-			State:      nullText(stmt, "state"),
-			DocumentID: nullInt64(stmt, "document_id"),
-
-			// CategoryDeep is the schema's default until the column exists.
-			// A grant with no category constraint is unaffected by it.
-			CategoryDeep: true,
+			SiteID:       nullInt64(stmt, "site_id"),
+			DocKind:      nullText(stmt, "doc_kind"),
+			CategoryID:   nullInt64(stmt, "category_id"),
+			CategoryPath: nullText(stmt, "category_path"),
+			CategoryDeep: stmt.GetBool("category_deep"),
+			WorkflowID:   nullInt64(stmt, "workflow_id"),
+			State:        nullText(stmt, "state"),
+			CollectionID: nullInt64(stmt, "collection_id"),
+			DocumentID:   nullInt64(stmt, "document_id"),
 		},
 		CreatedAt: created,
 		CreatedBy: createdBy,
@@ -251,13 +268,23 @@ type NewSite struct {
 	Domain string
 }
 
-// CreateSite inserts a site. It is here rather than in a file of its own
-// because M2 needs exactly one of them -- the one "cmsdb seed" creates -- and
-// because grants.site_id points at it. The rest of DESIGN.md 5.3 arrives with
-// the milestone that has documents to put in a category.
+// CreateSite inserts a site and its root category, in one transaction.
+//
+// The root is not optional and it is not somebody else's job. "A site has a
+// root category" is what makes path arithmetic total: a document filed nowhere
+// in particular is filed at "/", a URI built from a site with no root would
+// have no leading slash to start from, and a category created later needs a
+// parent to hang off. Migration 0009 wrote one for every site that already
+// existed; this writes one for every site created afterwards, so the rule has
+// no gap between the two.
+//
+// The root's uid is derived from the site's rather than minted, which is what
+// 0009 does and for the same reason: the row is a consequence of the site
+// rather than a thing somebody named, and a stable identifier lets a fixture
+// and an operator name it.
 func (db *DB) CreateSite(ctx context.Context, s NewSite) (int64, error) {
 	var id int64
-	err := db.Write(ctx, func(conn *sqlite.Conn) error {
+	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
 		err := run(conn, "creating site "+s.Name, `
 			INSERT INTO sites (uid, name, domain, active) VALUES (:uid, :name, :domain, 1)`,
 			func(stmt *sqlite.Stmt) {
@@ -269,7 +296,13 @@ func (db *DB) CreateSite(ctx context.Context, s NewSite) (int64, error) {
 			return err
 		}
 		id = conn.LastInsertRowID()
-		return nil
+		return insertCategory(conn, domain.Category{
+			UID:       "R" + s.UID,
+			SiteID:    id,
+			Directory: "",
+			Path:      domain.RootPath,
+			Name:      s.Name,
+		})
 	})
 	return id, err
 }

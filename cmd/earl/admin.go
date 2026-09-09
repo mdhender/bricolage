@@ -42,6 +42,8 @@ func newAdminGrantCmd() *cobra.Command {
 		site      int64
 		docKind   string
 		state     string
+		category  string
+		deep      bool
 	)
 	cmd := &cobra.Command{
 		Use:   "grant",
@@ -70,6 +72,16 @@ func newAdminGrantCmd() *cobra.Command {
 			if cmd.Flags().Changed("state") {
 				body["state"] = state
 			}
+			if cmd.Flags().Changed("category") {
+				// The category is named by its path, which is what a person
+				// reads and what the grant prefix-matches against. The server
+				// resolves it to a row; a client that sent both would be a
+				// client that could send two that disagree.
+				body["category"] = category
+			}
+			if cmd.Flags().Changed("deep") {
+				body["category_deep"] = deep
+			}
 
 			var out struct {
 				Privilege   string `json:"privilege"`
@@ -95,6 +107,10 @@ func newAdminGrantCmd() *cobra.Command {
 	cmd.Flags().Int64Var(&site, "site", 0, "restrict the grant to one site")
 	cmd.Flags().StringVar(&docKind, "doc-kind", "", "restrict the grant to story, media, or template")
 	cmd.Flags().StringVar(&state, "state", "", "restrict the grant to one workflow state")
+	cmd.Flags().StringVar(&category, "category", "",
+		"restrict the grant to one category, by path; needs --site")
+	cmd.Flags().BoolVar(&deep, "deep", true,
+		"a category grant covers the whole subtree below it")
 	_ = cmd.MarkFlagRequired("role")
 	_ = cmd.MarkFlagRequired("privilege")
 	return cmd

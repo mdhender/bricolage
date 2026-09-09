@@ -42,6 +42,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	root.AddCommand(newLoginCmd(), newLogoutCmd(), newWhoamiCmd(), newAdminCmd(), newDocCmd(), newQueueCmd(), newJobCmd())
+	root.AddCommand(newSiteCmd(), newCategoryCmd(), newChannelCmd(), newElementTypeCmd())
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the version, commit, and Go version",

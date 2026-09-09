@@ -17,6 +17,15 @@ type GrantRequest struct {
 	RoleSlug  string
 	Privilege domain.Privilege
 	Scope     domain.Scope
+
+	// CategoryPath is the category the grant is constrained to, named by its
+	// path. It is separate from Scope because a scope carries both the id and
+	// the path and the two must agree: the resolver matches a subtree by
+	// prefix on the path and performs no I/O (DESIGN.md 7.2), so a grant whose
+	// path named a different row from its id would match the wrong documents
+	// with nothing to notice. Taking one and resolving the other here means
+	// there is one source for the pair.
+	CategoryPath string
 }
 
 // CreateGrant writes a grant, refusing an escalation (DESIGN.md 7.3,
@@ -33,6 +42,19 @@ type GrantRequest struct {
 // before the INSERT, not after it in a transaction somebody may forget to roll
 // back.
 func (s *Service) CreateGrant(ctx context.Context, actor domain.Identity, req GrantRequest) (domain.Grant, error) {
+	if req.CategoryPath != "" {
+		if req.Scope.SiteID == nil {
+			return domain.Grant{}, fmt.Errorf(
+				"a category constraint needs a site: %q names one row per site: %w",
+				req.CategoryPath, domain.ErrInvalid)
+		}
+		c, err := s.db.CategoryByPath(ctx, *req.Scope.SiteID, req.CategoryPath)
+		if err != nil {
+			return domain.Grant{}, err
+		}
+		req.Scope.CategoryID = &c.ID
+		req.Scope.CategoryPath = &c.Path
+	}
 	if err := req.Scope.Validate(); err != nil {
 		return domain.Grant{}, err
 	}

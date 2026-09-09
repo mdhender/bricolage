@@ -73,6 +73,8 @@ func newDocCmd() *cobra.Command {
 		newDocDoCmd(),
 		newDocAssignCmd(),
 		newDocDueCmd(),
+		newDocCategoriesCmd(),
+		newDocURIsCmd(),
 	)
 	return cmd
 }
@@ -750,5 +752,137 @@ func newDocDoCmd() *cobra.Command {
 	cmd.Flags().StringVar(&to, "to", "", "the state to move to")
 	cmd.Flags().StringVar(&note, "note", "", "the note the transition carries, when one is required")
 	_ = cmd.MarkFlagRequired("to")
+	return cmd
+}
+
+// newDocCategoriesCmd shows or replaces where a document is filed
+// (PLAN.md M7).
+//
+// With no --set it reads; with one or more it replaces, and the first is the
+// primary category -- the one the URI is built from. Replacing rather than
+// adding is what the route does, and it is what a person means: "this story
+// belongs in features and in film" is one statement about the document, not a
+// sequence of additions that could half succeed.
+//
+// It needs no checkout. A filing points at the document rather than at a
+// version, so there is no draft copy of it to protect, and requiring a
+// checkout to refile a story would make moving a section impossible while
+// anybody was writing in it.
+func newDocCategoriesCmd() *cobra.Command {
+	var (
+		server string
+		asJSON bool
+		set    []string
+	)
+	cmd := &cobra.Command{
+		Use:   "categories UID",
+		Short: "Show or replace the categories a document is filed in",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+			path := docPath(args[0]) + "/categories"
+
+			var out struct {
+				UID        string `json:"uid"`
+				Categories []struct {
+					Category string `json:"category"`
+					Name     string `json:"name"`
+					Primary  bool   `json:"primary"`
+				} `json:"categories"`
+			}
+			if cmd.Flags().Changed("set") {
+				err = client.Do(cmd.Context(), http.MethodPut, path,
+					map[string]any{"categories": set}, &out)
+			} else {
+				err = client.Get(cmd.Context(), path, &out)
+			}
+			if err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(w, out)
+			}
+			if len(out.Categories) == 0 {
+				fmt.Fprintln(w, "filed nowhere; a document with no category has no address")
+				return nil
+			}
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "CATEGORY\tNAME\tPRIMARY")
+			for _, c := range out.Categories {
+				fmt.Fprintf(tw, "%s\t%s\t%t\n", c.Category, c.Name, c.Primary)
+			}
+			return tw.Flush()
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	cmd.Flags().StringSliceVar(&set, "set", nil,
+		"replace the filing with these category paths; the first is the primary one")
+	return cmd
+}
+
+// newDocURIsCmd shows what address a document has in every output channel of
+// its site (PLAN.md M7).
+//
+// This is the visible face of domain.BuildURI, and it is the command M7 exists
+// for: a URI format is configuration somebody types and gets wrong, and the
+// only alternative to showing them what it produces is publishing something to
+// find out.
+//
+// A channel that cannot build one -- a format carrying a date against a
+// version with no cover date -- reports its reason on its own line rather than
+// failing the command, because the other channels still have answers.
+func newDocURIsCmd() *cobra.Command {
+	var (
+		server string
+		asJSON bool
+	)
+	cmd := &cobra.Command{
+		Use:   "uris UID",
+		Short: "Show a document's address in every output channel",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+			var out struct {
+				UID  string `json:"uid"`
+				URIs []struct {
+					Channel string `json:"channel"`
+					Name    string `json:"name"`
+					URI     string `json:"uri"`
+					File    string `json:"file"`
+					URL     string `json:"url"`
+					Error   string `json:"error"`
+				} `json:"uris"`
+			}
+			if err := client.Get(cmd.Context(), docPath(args[0])+"/uris", &out); err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(w, out)
+			}
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "CHANNEL\tURI\tFILE\tURL")
+			for _, u := range out.URIs {
+				if u.Error != "" {
+					fmt.Fprintf(tw, "%s\t(no address)\t\t%s\n", u.Name, u.Error)
+					continue
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", u.Name, u.URI, u.File, u.URL)
+			}
+			return tw.Flush()
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
 	return cmd
 }

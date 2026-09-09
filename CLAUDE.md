@@ -108,18 +108,21 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M6 are complete and M7 has not started. `cmsdb` can `init`,
+M0 through M7 are complete and M8 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
 refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
 the session, identity, grant, document, version, diff, history, transition,
-workflow, assignment, due-date, queue, and job routes plus `/healthz`. It also
-hosts the background job workers, behind `--workers N` (default 1, `0` to
-disable). `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
-`admin assign`, `queue [SLUG]`, `job list|retry`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due`.
+workflow, assignment, due-date, queue, job, site, category, output-channel,
+element-type, filing, and URI routes plus `/healthz`. It also hosts the
+background job workers, behind `--workers N` (default 1, `0` to disable).
+`earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
+`admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
+`category list|create|show|move|delete`,
+`output-channel list|create|update`, `element-type list|create|update`, and
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris`.
 
-The schema is eight migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is nine migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -131,10 +134,15 @@ indexes that make "a site-specific workflow wins over the general one" a rule
 rather than a tie-break), and `0007_queue_indexes.sql` (the three indexes M5's
 queue queries seek on, replacing the partial `documents_mine` — which could not
 answer "unassigned", since SQLite may only use a partial index when the query's
-`WHERE` implies the index's), and `0008_jobs.sql` (the queue). `grants` carries the scope columns whose target table exists; the
-rest arrive with the migration that creates theirs, because SQLite cannot add a
-foreign key to a column that already exists. `internal/domain` and
-`internal/authz` already carry and resolve the whole scope.
+`WHERE` implies the index's), and `0008_jobs.sql` (the queue), and `0009_categories.sql` (`categories` with
+the materialised path, `document_categories` with its one-primary index,
+`output_channels`, `collections`, `document_collections`, and the last three
+scope columns). `grants` now carries all nine of `DESIGN.md` §7's scope
+dimensions; each arrived with the migration that created its target table,
+because SQLite cannot add a foreign key to a column that already exists.
+`internal/domain` and `internal/authz` have carried and resolved the whole scope
+since M2, so the resolver never changed as the columns landed — only the
+projection and the row scan in `internal/store` did.
 
 0005 is the one migration that carries the `-- migrate: disable-foreign-keys`
 directive, and it needs it: `documents` is rebuilt through SQLite's documented
@@ -156,6 +164,28 @@ lease: the lease protects the working draft, and requiring a checkout to hand
 work over would mean taking the draft away from the person being handed it.
 Saved queue definitions live in `internal/config`, not in the schema
 (`DESIGN.md` §14).
+
+Every site has exactly one root category, at path `/`, written in the same
+transaction as the site by `store.CreateSite` and by migration 0009 for the
+sites that predate it. That is what makes path arithmetic total: a document
+filed nowhere in particular is filed at `/`, and a category created later has a
+parent to hang off. `categories.path` is materialised, always `/`-terminated,
+and `UNIQUE (site_id, path)`; the subtree rewrite a move performs is one
+`UPDATE` whose prefix test is `SUBSTR` and not `LIKE`, because a directory name
+may contain `%` or `_`.
+
+Where a document is filed is a property of the document row, not of a version,
+so it is a subresource (`PUT /documents/{uid}/categories`) needing `Edit` and
+deliberately **not** the edit lease — the same rule M5 established for
+assignment and due dates, and `DESIGN.md` §12 was corrected to match. The first
+category given is the primary one, which is what `domain.BuildURI` expands
+`%{categories}` from.
+
+Content is validated against `element_types.schema` on check-in and nowhere
+else. A working draft may be invalid; a checked-in version may not. An element
+type declaring no fields declares that a document of that type carries none, so
+`cmsdb seed` writes a schema with a body and a deck rather than an empty field
+list.
 
 The job queue is claimed by one statement and held by a lease that expires on
 its own. `store.ClaimJob` is an `UPDATE ... RETURNING` that picks its own
