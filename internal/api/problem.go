@@ -3,9 +3,11 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -219,6 +221,33 @@ func decodeJSON(r *http.Request, v any) error {
 		return fmt.Errorf("body: more than one JSON value: %w", domain.ErrInvalid)
 	}
 	return nil
+}
+
+// decodeJSONOptional is decodeJSON for a route whose body is optional.
+//
+// An empty body is not a mistake on POST .../revoke: the only thing in it is a
+// reason, and revoking without giving one is an ordinary thing to do. A body
+// that is present is held to the same rules, so a misspelled "resaon" is still
+// refused rather than silently dropped.
+func decodeJSONOptional(r *http.Request, v any) error {
+	if r.Body == nil {
+		return nil
+	}
+	// The body is read rather than probed, because ContentLength is -1 on a
+	// chunked request and a "was it empty" question answered from the header
+	// would be answered wrongly there. Classifying an empty body by catching
+	// the decoder's io.EOF would mean reading its message, which is the habit
+	// invariant 11 exists to break -- so emptiness is decided here, on the
+	// bytes, and everything else goes through decodeJSON unchanged.
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxBodyBytes))
+	if err != nil {
+		return fmt.Errorf("body: %v: %w", err, domain.ErrInvalid)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return decodeJSON(r, v)
 }
 
 // maxBodyBytes bounds a request body. Nothing this milestone accepts is large,

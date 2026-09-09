@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mdhender/bricolage/internal/domain"
@@ -118,6 +119,58 @@ func userByID(conn *sqlite.Conn, id int64, u *domain.User) error {
 			*u, err = scanUser(stmt)
 			return err
 		})
+}
+
+// ListUsers returns users, oldest first, optionally narrowed to those whose
+// address or name contains q.
+//
+// It exists because the one identity write that was here before it --
+// POST /users/{uid}/roles -- needs a uid, and the only uid obtainable was the
+// one "cmsdb bootstrap admin" prints once at creation. Creating users nobody
+// can then assign a role to is not a feature (issue #6).
+//
+// The match is a substring on both columns, case-insensitive for ASCII, which
+// is what SQLite's LIKE gives and is enough for an address domain.NormalizeEmail
+// has already folded. LIKE with an escaped pattern rather than SUBSTR: this is a
+// search box and not path arithmetic, so a person typing "%" means a literal
+// per cent and the ESCAPE clause is what says so -- the reason categories.path
+// compares with SUBSTR does not apply to a query a human refines by eye.
+func (db *DB) ListUsers(ctx context.Context, q string) ([]domain.User, error) {
+	query := `SELECT ` + userColumns + ` FROM users`
+	var bind func(*sqlite.Stmt)
+	if q != "" {
+		query += ` WHERE email LIKE :q ESCAPE '\' OR name LIKE :q ESCAPE '\'`
+		pattern := "%" + escapeLike(q) + "%"
+		bind = func(stmt *sqlite.Stmt) { stmt.SetText(":q", pattern) }
+	}
+	query += ` ORDER BY id`
+
+	var out []domain.User
+	err := db.Read(ctx, func(conn *sqlite.Conn) error {
+		return run(conn, "listing users", query, bind, func(stmt *sqlite.Stmt) error {
+			u, err := scanUser(stmt)
+			if err != nil {
+				return err
+			}
+			out = append(out, u)
+			return nil
+		})
+	})
+	return out, err
+}
+
+// escapeLike makes a string safe to drop inside a LIKE pattern, with backslash
+// as the escape character the query declares.
+func escapeLike(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r == '%' || r == '_' || r == '\\' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // CountUsers reports how many users exist, which is what "cmsdb bootstrap

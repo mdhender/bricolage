@@ -119,6 +119,28 @@ func (o PublicOrigin) String() string {
 	return o.URL.Scheme + "://" + o.URL.Host
 }
 
+// InvitationPath is where an invitation link lands (issue #6). It is declared
+// here, beside the origin that makes a link absolute, because three things have
+// to agree about it: the route internal/web registers, the link
+// internal/service hands back once, and the form that posts the redemption.
+//
+// The token is in the path because that is what a magic link is. It is
+// therefore in the browser's history and in whatever the administrator sent it
+// through, which is why the window is 48 hours, the use is single, and the row
+// is settled the moment it is used.
+const InvitationPath = "/invite/"
+
+// InvitationLink renders the absolute link that redeems an invitation.
+//
+// Absolute, and built from the configured origin rather than from a request:
+// the administrator has to paste this into a message, and a relative path is
+// not something a person can be sent. The origin is configuration and never
+// inference (see DefaultPublicOrigin), so a link minted behind a proxy is the
+// one a browser can actually reach.
+func (o PublicOrigin) InvitationLink(token string) string {
+	return o.String() + InvitationPath + url.PathEscape(token)
+}
+
 // ValidateReturnTo checks a returnTo parameter against this origin and returns
 // the URL to redirect to (DESIGN.md 11).
 //

@@ -8,10 +8,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 invariants, the code conventions, the testing rules, and the Caddy warnings.
 Read it in full — this file is a summary and does not replace it.
 
-- `docs/DESIGN.md` (1581 lines) — what is being built and why; the reference for
+- `docs/DESIGN.md` (2574 lines) — what is being built and why; the reference for
   every implementation decision. Read the section relevant to the task before
   writing code.
-- `docs/PLAN.md` (660 lines) — milestones M0–M13, in order, each with acceptance
+- `docs/PLAN.md` (794 lines) — milestones M0–M14, in order, each with acceptance
   criteria. Work is organised by milestone; a PR names the milestone and the
   criteria it satisfies.
 - `AGENTS.md` — the rules while doing it.
@@ -108,17 +108,17 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M13 are complete; the milestones are done. `cmsdb` can `init`,
-`migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
+M0 through M13 are complete, and M14 (issue #6, invite-only registration) is in
+beside them. `cmsdb` can `init`, `migrate status`,
+`migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
 §13.4, and serves the session, identity, grant, document, version, diff,
 history, transition, workflow, assignment, due-date, queue, job, site,
 category, output-channel, element-type, filing, URI, preview, publication,
-resource, comment, approval, alert-rule, and notification routes plus
-`/healthz`, the `/preview/` mount, and the HTML UI at the root of the path
-space. It also hosts the
-background job workers, behind `--workers N` (default 1, `0` to disable), and
+resource, comment, approval, alert-rule, notification, invitation, and user
+routes plus `/healthz`, the `/preview/` mount, and the HTML UI at the root of
+the path space. It also hosts the background job workers, behind `--workers N` (default 1, `0` to disable), and
 the alert dispatcher, which always runs; both are handed to `internal/server`
 as one `server.Backgrounds` and stopped by it. It takes the optional
 `--templates DIR`, `--preview DIR`, `--output DIR`, and
@@ -128,10 +128,11 @@ as one `server.Backgrounds` and stopped by it. It takes the optional
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
 `doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources|comment|comments|resolve|approve [--withdraw]|approvals`,
-`alert list|show|create|update|delete|events`, and
-`notification list [--unread]|read`.
+`alert list|show|create|update|delete|events`,
+`notification list [--unread]|read`, `invite create|list|show|revoke|redeem`,
+and `user list|show`.
 
-The schema is twelve migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is thirteen migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -152,7 +153,9 @@ effect and its `has_checked_in_version` guard), and `0011_collaboration.sql`
 (no tables: the `UPDATE` raising the `review` state's `required_approvals` to
 1, now that M11's API can satisfy it, and the `comments_document` index the
 thread listing seeks on), and `0012_alerts.sql` (`alert_rules`,
-`notifications`, and `alert_cursor`). `grants` now carries all nine of `DESIGN.md` §7's scope
+`notifications`, and `alert_cursor`), and `0013_invitations.sql`
+(`invitations`, and the partial unique index that allows one pending
+invitation per address). `grants` now carries all nine of `DESIGN.md` §7's scope
 dimensions; each arrived with the migration that created its target table,
 because SQLite cannot add a foreign key to a column that already exists.
 `internal/domain` and `internal/authz` have carried and resolved the whole scope
@@ -363,6 +366,26 @@ through `events.Deliverer` after the commit, with failures counted and logged.
 Writing or reading a rule needs `create` over the system subject, as an element
 type does; an inbox is the caller's own and needs no privilege, because there
 is no route to anybody else's.
+
+**Registration is invite-only, and there are two verbs.** An administrator
+creates an invitation for an address and the response carries the link *once* —
+what is stored is a SHA-256, so nothing can hand it back a second time.
+Redeeming it creates the account and **issues no session**: the person is left
+at `/login`, which is what keeps the one unauthenticated write besides login
+free of login CSRF. Every redemption failure is the same 422, byte for byte,
+because a form that distinguished them would be an oracle for who has an
+account here; which of the six it was goes to the log.
+
+The two verbs are create and revoke. There is deliberately nothing that extends
+an invitation, renews an expired one, or forces one to expire: an administrator
+cannot see the credential they would be extending, re-inviting is what renewal
+means (it supersedes the old row and mints a new token), and forcing expiry is
+revocation with a different word in the audit trail — which is what `reason` is
+for. **Expiry is derived** (`expires_at < now`), so nothing runs at the 48-hour
+mark; the price is that a lapsed invitation still carries status `pending` and
+therefore still holds `invitations_one_pending`, which is why creating an
+invitation supersedes in the same transaction. No invitation row is ever
+deleted: it is the audit record of who invited whom.
 
 `internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render,publish,web,edge}`
 are real.

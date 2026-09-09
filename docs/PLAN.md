@@ -722,6 +722,64 @@ sibling spelled — the same correction M6 made for jobs.
 
 ---
 
+## M14 — Invite-only registration and user lookup
+
+**Goal.** Somebody who is not already in the database can be given an account,
+and somebody who is can be found.
+
+This is issue #6 rather than a milestone from the original plan. M0–M13 built an
+editorial system for a cast of people the database already held: five identity
+routes, none of which creates a user, and one — `POST /users/{uid}/roles` —
+which needs a uid nothing could produce. `cmsdb bootstrap admin` was the only
+way in.
+
+**Work.**
+- Migration `0013_invitations.sql`: the table, the partial unique index that
+  allows one pending invitation per address, and the two indexes the redemption
+  lookup and the listing seek on.
+- `internal/domain`: `Invitation`, the four statuses, `InvitationTTL`, and the
+  derived `Expired` / `Redeemable`. No stored `expired` status.
+- `internal/store`: `CreateInvitation` (which supersedes in the same
+  transaction), `Redeem` (which creates the user and settles the invitation in
+  one), `SettleInvitation`, `ClearInvitationToken`, and `ListUsers`.
+- `internal/service`: the two administrative verbs, the redemption, and the user
+  lookup, with `create` over the system subject for the first two and `read` for
+  the last.
+- `internal/api`, `internal/web`, `earl`: the five API routes, the two
+  administrative screens, the public redemption page, and `earl invite` /
+  `earl user`.
+
+**Acceptance.**
+1. On a database seeded with nothing but `cmsdb bootstrap admin`, an
+   administrator creates an invitation through `earl` and through the UI and is
+   shown the link once, with a way to copy it.
+2. The link redeems exactly once, creating a user and landing them at `/login`
+   with **no session issued**; they then sign in with the password they set.
+3. A second redemption fails; a wrong address fails; a redemption after 48 hours
+   fails; a revoked invitation fails; a superseded one fails. All five are
+   indistinguishable from outside — same status, same body — and each is
+   distinguishable in the log. One test compares them with each other, because
+   five separate assertions cannot check that they agree.
+4. No invitation row is deleted. Pending ones are listed by default; the
+   administrator can reveal the rest.
+5. An invitation that has lapsed does not block its address: inviting it again
+   succeeds, supersedes the old row, and the old link stops working at once.
+6. There is no route, flag, or button that extends an invitation, renews an
+   expired one, or forces one to expire.
+7. An administrator can find a user's uid without having kept the output of the
+   command that created them, and can then assign a role.
+8. `earl` performs every operation the UI offers, which the mapping table test
+   in `internal/server` already checks.
+
+**Not in it.** Removing a role, deactivating an account, editing a profile
+(#7); e-mail (#4), so the administrator sends the link by hand; password reset
+(#5), which is this token mechanism with a different starting point and should
+reuse it; and rate limiting (#8), which the uniform-refusal rule makes
+load-bearing rather than decorative — a refusal that teaches an attacker nothing
+per attempt leaves volume as the only avenue, and nothing yet bounds volume.
+
+---
+
 ## Cut lines
 
 If scope must shrink, cut in this order, and say so in the release notes:

@@ -1,0 +1,21 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Accept your invitation</h1>
+<p class="sub">Enter the address this invitation was sent to, your name, and a password. The address is asked for deliberately: it is what stops a forwarded invitation from working for whoever it was forwarded to.</p>
+{{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+<div class="card" style="max-width:30rem">
+  <form method="post" action="/invite">
+    <input type="hidden" name="token" value="{{.Token}}">
+    <label for="email">Email address</label>
+    <input id="email" type="email" name="email" value="{{.Email}}" autocomplete="username" required autofocus>
+    <label for="name">Your name</label>
+    <input id="name" type="text" name="name" value="{{.Name}}" autocomplete="name" required>
+    <label for="password">Password</label>
+    <input id="password" type="password" name="password" autocomplete="new-password" required>
+    <label for="confirm">Password again</label>
+    <input id="confirm" type="password" name="confirm" autocomplete="new-password" required>
+    <p><button class="primary" type="submit">Create my account</button></p>
+  </form>
+</div>
+<p class="muted">Accepting an invitation does not sign you in: it creates the account and sends you to the sign-in form, where the password you just chose gets used straight away.</p>
+{{end}}

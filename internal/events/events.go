@@ -280,6 +280,30 @@ const (
 	// contents.
 	ElementTypeCreated = "element_type.created"
 	ElementTypeUpdated = "element_type.updated"
+
+	// Invitations (issue #6). Registration is invite-only, so these four are
+	// the history of how every account but the bootstrap administrator came
+	// to exist.
+	//
+	// There is deliberately no "invitation.expired". Expiry is derived from
+	// expires_at, so nothing runs at the 48-hour mark to write an event, and
+	// an event nothing writes is worse than no event at all: an alert rule
+	// could be pointed at it and would never fire.
+	InvitationCreated = "invitation.created"
+
+	// InvitationRedeemed is written in the same transaction as the user row it
+	// created, beside the user.created that records the account itself.
+	InvitationRedeemed = "invitation.redeemed"
+
+	// InvitationRevoked is written when an administrator cancels one. Its
+	// payload carries the reason, when one was given, which is why there is no
+	// separate verb for forcing an invitation to expire: the two acts differ
+	// only in the sentence recorded here.
+	InvitationRevoked = "invitation.revoked"
+
+	// InvitationSuperseded is written when a later invitation to the same
+	// address replaces this one. The actor is whoever created the replacement.
+	InvitationSuperseded = "invitation.superseded"
 )
 
 // names are the display names the admin screens and the CLI show. A type with
@@ -331,6 +355,11 @@ var names = map[string]string{
 	OutputChannelUpdated: "Output channel updated",
 	ElementTypeCreated:   "Element type created",
 	ElementTypeUpdated:   "Element type updated",
+
+	InvitationCreated:    "Invitation sent",
+	InvitationRedeemed:   "Invitation redeemed",
+	InvitationRevoked:    "Invitation revoked",
+	InvitationSuperseded: "Invitation superseded",
 }
 
 // All returns every event type this binary knows, in a stable order.
@@ -375,6 +404,10 @@ func All() []string {
 		OutputChannelUpdated,
 		ElementTypeCreated,
 		ElementTypeUpdated,
+		InvitationCreated,
+		InvitationRedeemed,
+		InvitationRevoked,
+		InvitationSuperseded,
 	}
 }
 

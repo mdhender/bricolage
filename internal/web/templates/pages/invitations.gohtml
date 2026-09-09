@@ -1,0 +1,89 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Invitations</h1>
+<p class="sub">Registration is invite-only: there is no sign-up form. An invitation is good for 48 hours and for one use, and the link is shown once &mdash; what this system stores is a hash of it, so there is nothing to show you a second time.</p>
+{{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+
+{{with .Created}}
+<div class="card">
+  <h2>Send this link to {{.Invitation.Email}}</h2>
+  <p class="sub">This is the only time it is shown. It stops working at {{stamp .Invitation.ExpiresAt}} UTC, or the moment it is used, or the moment you invite this address again.</p>
+  <p class="row">
+    <input id="invitation-link" type="text" readonly value="{{.Link}}" style="flex:1" onfocus="this.select()">
+    <button type="button" class="primary" data-copy="invitation-link">Copy</button>
+  </p>
+  <p class="muted">There is no e-mail transport yet, so sending it is yours to do. With JavaScript off, the box above selects itself when you click it.</p>
+</div>
+{{- /* The copy affordance, and the whole of the JavaScript on this page. The
+       link is 43 characters of base64 after an origin, and expecting somebody
+       to select it by hand without clipping the first character is how an
+       invitation gets reported as broken. With scripting off the button does
+       nothing and the input still selects itself on focus, which is why the
+       input is there rather than a <code> element. */ -}}
+<script>
+document.querySelectorAll("button[data-copy]").forEach(function (button) {
+  button.addEventListener("click", function () {
+    var field = document.getElementById(button.getAttribute("data-copy"));
+    if (!field) { return; }
+    field.select();
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(field.value).then(function () {
+        button.textContent = "Copied";
+      }, function () {
+        button.textContent = "Press \u2318C";
+      });
+      return;
+    }
+    button.textContent = "Press \u2318C";
+  });
+});
+</script>
+{{end}}
+
+<div class="card">
+  <p class="row">
+    <a class="button" href="/admin/invitations">Pending</a>
+    <a class="button" href="/admin/invitations?status=all">Everything</a>
+    {{range .Statuses}}<a class="button" href="/admin/invitations?status={{.}}">{{.}}</a>{{end}}
+  </p>
+  <p class="muted">Showing: {{.Filter}}. No invitation is ever deleted &mdash; a terminal one stays so that &ldquo;who invited this person, and did they ever accept&rdquo; keeps an answer.</p>
+  <table>
+    <thead><tr><th>Address</th><th>Status</th><th>Expires</th><th>Invited by</th><th>Account</th><th>Reason</th><th></th></tr></thead>
+    <tbody>
+      {{range .Invitations}}
+        <tr>
+          <td>{{.Email}}</td>
+          <td>
+            <span class="pill">{{.Status}}</span>
+            {{if and (eq .Status "pending") (.Expired $.Now)}}<span class="pill">expired</span>{{end}}
+          </td>
+          <td>{{stamp .ExpiresAt}}</td>
+          <td>{{with .InvitedByName}}{{.}}{{else}}&mdash;{{end}}</td>
+          <td class="mono">{{with .UserUID}}{{.}}{{else}}&mdash;{{end}}</td>
+          <td>{{with .Reason}}{{.}}{{else}}&mdash;{{end}}</td>
+          <td>
+            {{if eq .Status "pending"}}
+              <form class="inline-form" method="post" action="/admin/invitations/{{.UID}}/revoke">
+                <input type="text" name="reason" placeholder="why (optional)">
+                <button type="submit">Revoke</button>
+              </form>
+            {{end}}
+          </td>
+        </tr>
+      {{else}}
+        <tr><td colspan="7" class="empty">nothing to show</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>Invite somebody</h2>
+  <p class="sub">Inviting an address that already has a pending invitation replaces it: the new link works and the old one stops. That is also how a lapsed invitation is replaced &mdash; there is deliberately no way to extend one, renew an expired one, or force one to expire, because an administrator cannot see the link they would be extending.</p>
+  <form method="post" action="/admin/invitations">
+    <label for="email">Email address</label>
+    <input id="email" type="email" name="email" required>
+    <p><button class="primary" type="submit">Create the invitation</button></p>
+  </form>
+</div>
+{{end}}
