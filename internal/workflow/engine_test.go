@@ -811,3 +811,77 @@ func TestPublishedIsAStateNotAnExit(t *testing.T) {
 		t.Errorf("a published document cannot be revised: %s", a.Reason)
 	}
 }
+
+// TestPrivilegeRefusalReadsAsASentence is what an editor sees beside a
+// greyed-out action.
+//
+// Allowed.Reason is printed verbatim by "earl doc transitions", so it must be
+// the sentence and not the error chain: a trailing ": forbidden" is written for
+// whoever is debugging the refusal, not for whoever received it.
+func TestPrivilegeRefusalReadsAsASentence(t *testing.T) {
+	h := newHarness(t)
+	writer := h.actor(t, "writer@example.com", domain.Edit)
+	doc := h.doc(t, writer, "Not Mine To Archive")
+
+	menu, err := h.engine.Available(t.Context(), doc, writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := allowed(t, menu, "archived")
+	if archive.Permitted {
+		t.Fatal("a writer holding only Edit may archive")
+	}
+	if want := "create is required over this document"; archive.Reason != want {
+		t.Errorf("Reason = %q, want %q", archive.Reason, want)
+	}
+	if archive.Guard != "" {
+		t.Errorf("a privilege refusal names guard %q", archive.Guard)
+	}
+
+	// Do refuses the same way, and the error -- which is for a log rather than
+	// for a column -- still answers to ErrForbidden so the edge maps it to 403.
+	_, err = h.engine.Do(t.Context(), Request{Document: doc, To: "archived", Actor: writer})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Errorf("Do = %v, want ErrForbidden", err)
+	}
+	if errors.Is(err, domain.ErrGuardFailed) {
+		t.Error("a privilege refusal answers to ErrGuardFailed; that would make it a 409 about the document")
+	}
+}
+
+// TestAvailableIsOneSnapshot is why TransitionFactsFor is given the document
+// rather than re-reading it.
+//
+// A caller renders the state above the menu. If the engine read the row again
+// on another connection, the two could come from different instants and the
+// page could say "draft" over the transitions out of review.
+func TestAvailableIsOneSnapshot(t *testing.T) {
+	h := newHarness(t)
+	editor := h.actor(t, "editor@example.com", domain.Publish)
+	doc := h.doc(t, editor, "Snapshot")
+
+	// Move the row behind the caller's back, the way a colleague would.
+	h.exec(t, fmt.Sprintf("UPDATE documents SET state = 'review' WHERE id = %d", doc.ID))
+
+	// doc is the copy the caller holds, still in draft. The menu must be the
+	// one that belongs to it.
+	menu, err := h.engine.Available(t.Context(), doc, editor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range menu {
+		if a.Transition.From != doc.State {
+			t.Errorf("the menu offers %s, which leaves %q, for a document the caller has in %q",
+				a.Transition.Name, a.Transition.From, doc.State)
+		}
+	}
+
+	// Do is not fooled by the same staleness: it reloads inside its
+	// transaction, where staleness would actually cost something.
+	if _, err := h.engine.Do(t.Context(), Request{Document: doc, To: "archived", Actor: editor}); err != nil {
+		t.Fatalf("archive from the real state: %v", err)
+	}
+	if got := h.reload(t, doc.UID).State; got != "archived" {
+		t.Errorf("state = %q, want archived", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mdhender/bricolage/internal/domain"
 	"github.com/mdhender/bricolage/internal/events"
+	"github.com/mdhender/bricolage/internal/reqctx"
 	"github.com/mdhender/bricolage/internal/service"
 )
 
@@ -448,29 +449,32 @@ func (h *Handler) writeView(w http.ResponseWriter, r *http.Request, status int, 
 //
 // It is a closure over one service call for the same reason lookup is, and it
 // caches within a request because a list of a hundred documents is usually one
-// workflow: the first miss loads them all and the rest are free.
+// workflow: the first call loads the table and the rest are free. It asks for
+// identifiers only, not for whole processes, so a workflow somewhere else in
+// the system being half configured does not cost this document its name.
 //
-// A failure to load leaves the name empty rather than failing the request. The
-// same reasoning as lookup: a document is readable whether or not the process
-// governing it can be named, and the transition routes -- where the workflow
-// actually decides something -- load it themselves and report the failure.
+// A failure to load leaves the name empty rather than failing the request --
+// a document is readable whether or not the process governing it can be named
+// -- but it is logged, because a name that is silently missing looks exactly
+// like a document that has no workflow, and those are different problems.
 func (h *Handler) workflows(r *http.Request) workflowLookup {
-	cache := map[int64]string{}
+	var (
+		loaded bool
+		uids   map[int64]string
+	)
 	return func(id int64) string {
-		if hit, ok := cache[id]; ok {
-			return hit
-		}
-		uid := ""
-		if got, err := h.svc.Workflows(r.Context()); err == nil {
-			for _, wf := range got {
-				cache[wf.ID] = wf.UID
-				if wf.ID == id {
-					uid = wf.UID
-				}
+		if !loaded {
+			loaded = true
+			got, err := h.svc.WorkflowUIDs(r.Context())
+			if err != nil {
+				h.log.Error("naming workflows",
+					"path", r.URL.Path,
+					"request_id", reqctx.RequestID(r.Context()),
+					"error", err)
 			}
+			uids = got
 		}
-		cache[id] = uid
-		return uid
+		return uids[id]
 	}
 }
 

@@ -602,11 +602,21 @@ func TestUnknownGuardRefusesTheWorkflow(t *testing.T) {
 	}
 
 	_, err = f.db.WorkflowByID(t.Context(), f.workflow.ID)
-	if !errors.Is(err, domain.ErrInvalid) {
-		t.Fatalf("a workflow configured with an unenforced guard loaded cleanly: %v", err)
+	if err == nil {
+		t.Fatal("a workflow configured with an unenforced guard loaded cleanly")
 	}
 	if !strings.Contains(err.Error(), "pre_chk_rules") {
 		t.Errorf("the refusal does not name the guard: %v", err)
+	}
+
+	// It is not domain.ErrInvalid. The caller asked a good question; the
+	// database is configured with a process this binary cannot run, and
+	// telling the client their request was malformed would send them looking
+	// in the wrong place (a 422 rather than a 500).
+	for _, sentinel := range []error{domain.ErrInvalid, domain.ErrNotFound, domain.ErrConflict, domain.ErrForbidden} {
+		if errors.Is(err, sentinel) {
+			t.Errorf("the refusal answers to %v; a misconfigured process is the server's fault", sentinel)
+		}
 	}
 }
 
@@ -629,4 +639,99 @@ func applyTo(t *testing.T, conn *sqlite.Conn, n int) error {
 		return fmt.Errorf("applying migrations to %d: %w", n, err)
 	}
 	return nil
+}
+
+// TestOneWorkflowGovernsOneKindPerSite is 0006. WorkflowFor resolves a
+// site-specific workflow over the general one, and these indexes are what make
+// that a rule rather than a tie-break: without them two workflows for the same
+// kind and site are accepted, the lower id silently wins, and every document
+// created afterwards enters one of them with nothing to notice.
+func TestOneWorkflowGovernsOneKindPerSite(t *testing.T) {
+	f := newDocFixture(t)
+
+	newWorkflow := func(uid, kind string, siteID *int64) error {
+		return f.db.Write(t.Context(), func(conn *sqlite.Conn) error {
+			return run(conn, "adding workflow "+uid, `
+				INSERT INTO workflows (uid, site_id, kind, name, initial_state)
+				VALUES (:uid, :site_id, :kind, :name, 'draft')`,
+				func(stmt *sqlite.Stmt) {
+					stmt.SetText(":uid", uid)
+					bindNullInt64(stmt, ":site_id", siteID)
+					stmt.SetText(":kind", kind)
+					stmt.SetText(":name", uid)
+				}, nil)
+		})
+	}
+
+	// A second workflow governing stories on every site is refused: the one
+	// the migration seeded already does.
+	if err := newWorkflow(ids.MustNew(f.now), domain.KindStory, nil); !errors.Is(err, domain.ErrConflict) {
+		t.Errorf("a second default story workflow was accepted: %v", err)
+	}
+
+	// A different kind is fine.
+	if err := newWorkflow(ids.MustNew(f.now), domain.KindMedia, nil); err != nil {
+		t.Fatalf("a default media workflow was refused: %v", err)
+	}
+
+	// A story workflow for one site is fine, and wins over the general one.
+	// It gets a state, because WorkflowFor validates what it hands back and a
+	// workflow with no states is not one the engine can run.
+	siteUID := ids.MustNew(f.now)
+	if err := newWorkflow(siteUID, domain.KindStory, &f.siteID); err != nil {
+		t.Fatalf("a site-specific story workflow was refused: %v", err)
+	}
+	err := f.db.Write(t.Context(), func(conn *sqlite.Conn) error {
+		return sqlitex.ExecuteTransient(conn, `
+			INSERT INTO workflow_states (workflow_id, slug, name, position)
+			SELECT id, 'draft', 'Draft', 1 FROM workflows WHERE uid = '`+siteUID+`'`, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := f.db.WorkflowFor(t.Context(), domain.KindStory, f.siteID)
+	if err != nil {
+		t.Fatalf("WorkflowFor: %v", err)
+	}
+	if got.UID != siteUID {
+		t.Errorf("WorkflowFor chose %q, want the site-specific %q", got.UID, siteUID)
+	}
+
+	// A second one for that same site is not.
+	if err := newWorkflow(ids.MustNew(f.now), domain.KindStory, &f.siteID); !errors.Is(err, domain.ErrConflict) {
+		t.Errorf("a second story workflow for one site was accepted: %v", err)
+	}
+}
+
+// TestWorkflowUIDsIgnoresAMisconfiguredProcess is why naming a workflow is a
+// different query from loading one.
+//
+// ListWorkflows validates, so one half-configured process fails it -- which is
+// right when the caller is about to run the process. Naming the workflow a
+// document is in must not depend on some other workflow being well formed.
+func TestWorkflowUIDsIgnoresAMisconfiguredProcess(t *testing.T) {
+	f := newDocFixture(t)
+
+	err := f.db.Write(t.Context(), func(conn *sqlite.Conn) error {
+		return sqlitex.ExecuteTransient(conn,
+			`INSERT INTO workflows (uid, site_id, kind, name, initial_state)
+			 VALUES ('half-configured', NULL, 'media', 'Half Configured', 'draft')`, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The new workflow has no states, so it does not validate.
+	if _, err := f.db.ListWorkflows(t.Context()); err == nil {
+		t.Fatal("ListWorkflows accepted a workflow with no states")
+	}
+
+	uids, err := f.db.WorkflowUIDs(t.Context())
+	if err != nil {
+		t.Fatalf("WorkflowUIDs: %v", err)
+	}
+	if uids[f.workflow.ID] != f.workflow.UID {
+		t.Errorf("the story workflow lost its name to an unrelated misconfigured row: %v", uids)
+	}
 }

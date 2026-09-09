@@ -425,6 +425,14 @@ CREATE TABLE workflows (
   initial_state TEXT    NOT NULL
 ) STRICT;
 
+-- One workflow governs one kind on one site. A site-specific workflow wins
+-- over the general one, and these are what make that a rule rather than a
+-- tie-break between rows that should not both exist. Two partial indexes and
+-- not UNIQUE (kind, site_id), because SQLite treats NULLs as distinct in a
+-- unique index and site_id IS NULL is exactly the row this is about.
+CREATE UNIQUE INDEX workflows_default_per_kind ON workflows(kind) WHERE site_id IS NULL;
+CREATE UNIQUE INDEX workflows_site_per_kind    ON workflows(kind, site_id) WHERE site_id IS NOT NULL;
+
 CREATE TABLE workflow_states (
   workflow_id        INTEGER NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
   slug               TEXT    NOT NULL,
@@ -656,6 +664,17 @@ declare.
 
 Alert evaluation happens **after commit**, driven off the event row, so a
 failing notification cannot roll back an editorial action.
+
+`Available` is given the document the caller already read rather than reading
+it again, so the state a UI renders above the menu and the transitions in it
+come from one snapshot. `Do` reloads inside its transaction, which is where
+staleness would actually cost something.
+
+A workflow this binary cannot run — a guard outside the vocabulary, a state
+nothing declares — fails the read that loaded it, and that failure is
+deliberately **not** `ErrInvalid`. The caller asked a good question; the
+database is misconfigured. It is a 500, logged for an operator, rather than a
+422 telling a client their request was malformed.
 
 ## 7. Authorization
 

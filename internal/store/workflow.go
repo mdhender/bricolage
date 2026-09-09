@@ -133,6 +133,30 @@ func (db *DB) ListWorkflows(ctx context.Context) ([]domain.Workflow, error) {
 	return out, err
 }
 
+// WorkflowUIDs returns every workflow's external identifier, keyed by its
+// internal id (invariant 10).
+//
+// It is deliberately not ListWorkflows. That loads states and transitions and
+// validates the result, so one half-configured process -- a workflows row
+// written before its states, a guard this binary does not enforce -- fails the
+// whole call. That is right when the caller is about to run the process and
+// wrong when it only wants to name it: a document is readable whether or not
+// some other workflow is misconfigured, and a document response losing its
+// workflow name because of a row it has nothing to do with is collateral
+// damage.
+func (db *DB) WorkflowUIDs(ctx context.Context) (map[int64]string, error) {
+	out := map[int64]string{}
+	err := db.Read(ctx, func(conn *sqlite.Conn) error {
+		return run(conn, "listing workflow identifiers",
+			`SELECT id, uid FROM workflows ORDER BY id`, nil,
+			func(stmt *sqlite.Stmt) error {
+				out[stmt.GetInt64("id")] = stmt.GetText("uid")
+				return nil
+			})
+	})
+	return out, err
+}
+
 // loadWorkflowParts fills in a workflow's states and transitions and validates
 // the result.
 //
@@ -180,7 +204,22 @@ func loadWorkflowParts(conn *sqlite.Conn, w *domain.Workflow) error {
 	if err != nil {
 		return err
 	}
-	return w.Validate()
+
+	// The validation failure is deliberately not wrapped with %w.
+	//
+	// domain.Transition.Validate answers to domain.ErrInvalid, which is right
+	// when it is judging something a client sent and wrong here: the caller
+	// asked a perfectly good question and the answer is that this database is
+	// configured with a process this binary cannot run. Letting ErrInvalid
+	// through would make the transport edge return 422 and tell the client
+	// their request was malformed. Stripping it leaves an unclassified error,
+	// which is a 500 -- the server's fault, logged for an operator, generic to
+	// everybody else (DESIGN.md 14).
+	if err := w.Validate(); err != nil {
+		return fmt.Errorf("workflow %q (id %d) is configured in a way this binary cannot run: %v",
+			w.Name, w.ID, err)
+	}
+	return nil
 }
 
 func scanWorkflow(stmt *sqlite.Stmt) domain.Workflow {
@@ -207,12 +246,16 @@ func scanTransition(stmt *sqlite.Stmt) (domain.Transition, error) {
 		Privilege:  domain.Privilege(stmt.GetInt64("privilege")),
 		Position:   int(stmt.GetInt64("position")),
 	}
+	// Neither failure is wrapped with %w, for the reason loadWorkflowParts
+	// gives: domain.ErrInvalid is a judgement about something a client sent,
+	// and a guards column this binary cannot parse is a judgement about this
+	// database. One is a 422, the other is a 500.
 	var err error
 	if t.Guards, err = domain.ParseGuards(stmt.GetText("guards")); err != nil {
-		return domain.Transition{}, fmt.Errorf("transition %d: %w", t.ID, err)
+		return domain.Transition{}, fmt.Errorf("transition %q (id %d): %v", t.Name, t.ID, err)
 	}
 	if t.Effects, err = domain.ParseEffects(stmt.GetText("effects")); err != nil {
-		return domain.Transition{}, fmt.Errorf("transition %d: %w", t.ID, err)
+		return domain.Transition{}, fmt.Errorf("transition %q (id %d): %v", t.Name, t.ID, err)
 	}
 	return t, nil
 }
@@ -451,30 +494,34 @@ func clearApprovals(conn *sqlite.Conn, versionID int64) error {
 		func(stmt *sqlite.Stmt) { stmt.SetInt64(":version_id", versionID) }, nil)
 }
 
-// TransitionFactsFor loads the same facts ApplyTransition loads, for a caller
-// that is only asking what would happen.
+// TransitionFactsFor loads the same facts ApplyTransition loads, about a
+// document the caller has already read.
 //
 // It is the read half of invariant 5: Available renders from this and Do
 // decides from the transaction's copy of it, and both hand the result to one
 // check function. A second loader here -- a query that fetched slightly
 // different facts for the menu than for the action -- is exactly the defect
 // the invariant exists to prevent.
-func (db *DB) TransitionFactsFor(ctx context.Context, documentID int64) (TransitionFacts, error) {
-	var facts TransitionFacts
+//
+// The document is passed in rather than re-read. Re-reading it here would put
+// the row on a second connection at a second instant, so a caller could render
+// "state: draft" above the transitions out of review; passing it in makes the
+// menu and the state it is displayed under one snapshot. Do does not rely on
+// that -- it reloads inside its transaction, which is where staleness would
+// actually cost something.
+func (db *DB) TransitionFactsFor(ctx context.Context, doc domain.Document) (TransitionFacts, error) {
+	facts := TransitionFacts{Document: doc}
 	err := db.Read(ctx, func(conn *sqlite.Conn) error {
-		if err := documentByID(conn, documentID, &facts.Document); err != nil {
-			return err
-		}
-		if facts.Document.CurrentVersionID != 0 {
-			if err := versionByID(conn, facts.Document.CurrentVersionID, &facts.Version); err != nil {
+		if doc.CurrentVersionID != 0 {
+			if err := versionByID(conn, doc.CurrentVersionID, &facts.Version); err != nil {
 				return err
 			}
 		}
 		var err error
-		if facts.ApprovalsByState, err = approvalsByState(conn, facts.Document.CurrentVersionID); err != nil {
+		if facts.ApprovalsByState, err = approvalsByState(conn, doc.CurrentVersionID); err != nil {
 			return err
 		}
-		facts.UnresolvedComments, err = unresolvedComments(conn, documentID)
+		facts.UnresolvedComments, err = unresolvedComments(conn, doc.ID)
 		return err
 	})
 	return facts, err

@@ -117,14 +117,16 @@ workflow routes plus `/healthz`. `earl` can `login` (with `--dev`), `whoami`,
 `logout`, `admin grant`, `admin assign`, and
 `doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do`.
 
-The schema is five migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is six migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
 and `grants.document_id`), and `0005_workflow.sql` (`workflows`,
 `workflow_states`, `workflow_transitions`, `approvals`, `comments`,
 `grants.workflow_id`, the default story workflow, and the rebuild of
-`documents`). `grants` carries the scope columns whose target table exists; the
+`documents`), and `0006_one_workflow_per_kind.sql` (the two partial unique
+indexes that make "a site-specific workflow wins over the general one" a rule
+rather than a tie-break). `grants` carries the scope columns whose target table exists; the
 rest arrive with the migration that creates theirs, because SQLite cannot add a
 foreign key to a column that already exists. `internal/domain` and
 `internal/authz` already carry and resolve the whole scope.

@@ -120,7 +120,7 @@ func (e *Engine) Available(ctx context.Context, doc domain.Document, actor domai
 	if err != nil {
 		return nil, err
 	}
-	loaded, err := e.db.TransitionFactsFor(ctx, doc.ID)
+	loaded, err := e.db.TransitionFactsFor(ctx, doc)
 	if err != nil {
 		return nil, err
 	}
@@ -214,8 +214,10 @@ func newFacts(w domain.Workflow, loaded store.TransitionFacts, actor domain.Iden
 // depending on map iteration.
 func check(t domain.Transition, f facts) error {
 	if !authz.Allows(f.Actor.Grants, f.Document.Subject(), t.Privilege) {
-		return fmt.Errorf("%s: %s is required over this document: %w",
-			t.Name, t.Privilege, domain.ErrForbidden)
+		return &privilegeError{
+			Transition: t.Name,
+			Reason:     fmt.Sprintf("%s is required over this document", t.Privilege),
+		}
 	}
 	for _, g := range t.Guards {
 		if err := checkGuard(g, t, f); err != nil {
@@ -332,14 +334,44 @@ func outcome(t domain.Transition, f facts) (store.TransitionOutcome, error) {
 	return out, nil
 }
 
+// privilegeError is a transition refused because the actor does not hold the
+// privilege it declares.
+//
+// It is a type rather than a wrapped fmt.Errorf so that Allowed.Reason can be
+// the sentence a person reads -- "create is required over this document" --
+// rather than the whole error chain with ": forbidden" on the end. earl prints
+// Reason verbatim in a column, and an error's own message is written for
+// whoever is debugging it.
+//
+// It answers to ErrForbidden, so the one mapping function at the transport edge
+// turns it into a 403 with no new case, and it is deliberately not a
+// GuardError: a guard is a statement about the document and a 409, a privilege
+// is a statement about the person and a 403. Rendering them the same way sends
+// an editor to an administrator for something no administrator can fix.
+type privilegeError struct {
+	Transition string
+	Reason     string
+}
+
+func (e *privilegeError) Error() string {
+	return fmt.Sprintf("%s: %s: %v", e.Transition, e.Reason, domain.ErrForbidden)
+}
+
+func (e *privilegeError) Unwrap() error { return domain.ErrForbidden }
+
 // reasonOf renders a refusal for a person.
 //
-// A guard refusal is already written that way; anything else is the error's
-// own message, which is what an editor sees beside a greyed-out button.
+// The two refusals a check can produce each carry their own sentence; anything
+// else is a failure rather than a refusal, and its own message is the best
+// thing to show.
 func reasonOf(err error) string {
 	var ge *domain.GuardError
 	if errors.As(err, &ge) {
 		return ge.Reason
+	}
+	var pe *privilegeError
+	if errors.As(err, &pe) {
+		return pe.Reason
 	}
 	return err.Error()
 }

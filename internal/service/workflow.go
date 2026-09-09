@@ -63,6 +63,18 @@ func (s *Service) Transition(ctx context.Context, actor domain.Identity, uid, to
 
 // Workflows returns every configured workflow with its states and
 // transitions. It is what "cmsdb seed" reports and what an admin screen lists.
+//
+// One misconfigured process fails the whole call, deliberately: a guard this
+// binary does not enforce is a rule that silently does nothing, and a listing
+// that quietly omitted the offending workflow would be the report that hid it
+// (invariant 6).
 func (s *Service) Workflows(ctx context.Context) ([]domain.Workflow, error) {
 	return s.db.ListWorkflows(ctx)
+}
+
+// WorkflowUIDs returns every workflow's external identifier, keyed by the
+// internal id, so that a transport can name the workflow a document is in
+// without loading and validating every process in the system.
+func (s *Service) WorkflowUIDs(ctx context.Context) (map[int64]string, error) {
+	return s.db.WorkflowUIDs(ctx)
 }

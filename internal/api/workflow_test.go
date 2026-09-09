@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/mdhender/bricolage/internal/domain"
+	"zombiezen.com/go/sqlite"
+	"zombiezen.com/go/sqlite/sqlitex"
 )
 
 // The transport half of M4. What is under test here is the status code, the
@@ -273,5 +275,49 @@ func (h *harness) checkoutEditCheckin(t *testing.T, token, uid, slug string) {
 	if w := h.do(t, http.MethodPost, "/api/v1/documents/"+uid+"/checkin", token,
 		map[string]any{"note": "ready"}); w.Code != http.StatusOK {
 		t.Fatalf("checkin = %d %s", w.Code, w.Body)
+	}
+}
+
+// TestDocumentNamesItsWorkflowWithoutLoadingEveryProcess is the transport's
+// half of the same rule: naming the workflow a document is in must not depend
+// on some other workflow being well formed.
+func TestDocumentNamesItsWorkflowWithoutLoadingEveryProcess(t *testing.T) {
+	h := newDocAPIHarness(t)
+	h.user(t, "admin@example.com", domain.Publish)
+	token := h.login(t, "admin@example.com")
+	doc := h.createDoc(t, token, "Named")
+	if doc.Workflow == "" {
+		t.Fatal("the created document names no workflow")
+	}
+
+	// A workflow with no states: it does not validate, so listing processes
+	// fails. The document response must be unaffected.
+	err := h.db.Write(t.Context(), func(conn *sqlite.Conn) error {
+		return sqlitex.ExecuteTransient(conn,
+			`INSERT INTO workflows (uid, site_id, kind, name, initial_state)
+			 VALUES ('half-configured', NULL, 'media', 'Half Configured', 'draft')`, nil)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 500 and not 422: the caller asked a good question, and the answer is
+	// that this database is configured with a process this binary cannot run.
+	// A 422 would tell them their request was malformed and send them looking
+	// in the wrong place.
+	if w := h.do(t, http.MethodGet, "/api/v1/workflows", token, nil); w.Code != http.StatusInternalServerError {
+		t.Errorf("GET /api/v1/workflows = %d %s, want 500", w.Code, w.Body)
+	}
+
+	w := h.do(t, http.MethodGet, "/api/v1/documents/"+doc.UID, token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET document = %d %s", w.Code, w.Body)
+	}
+	var got documentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Workflow != doc.Workflow {
+		t.Errorf("the document lost its workflow name to an unrelated misconfigured row: %q", got.Workflow)
 	}
 }
