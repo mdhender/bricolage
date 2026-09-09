@@ -69,6 +69,18 @@ const (
 	// version is deleted, and that deletion has to be reconstructible from
 	// the event, because the row it was about is gone.
 	DocumentReverted = "document.reverted"
+
+	// DocumentTransitioned is written when a document moves between workflow
+	// states (PLAN.md M4). It is the only event that records a change to
+	// documents.state, because internal/workflow is the only thing that makes
+	// one (invariant 4).
+	//
+	// The payload carries where it went from and to, which transition, the
+	// note, and the guards and effects the transition declared -- enough to
+	// reconstruct not just that it moved but what the process demanded of it
+	// at the time. A workflow reconfigured next month does not rewrite what
+	// happened this month.
+	DocumentTransitioned = "document.transitioned"
 )
 
 // names are the display names the admin screens and the CLI show. A type with
@@ -88,6 +100,7 @@ var names = map[string]string{
 	DocumentCheckedIn:        "Checked in",
 	DocumentCheckoutCanceled: "Checkout cancelled",
 	DocumentReverted:         "Draft reverted",
+	DocumentTransitioned:     "Moved",
 }
 
 // All returns every event type this binary knows, in a stable order.
@@ -105,6 +118,7 @@ func All() []string {
 		DocumentCheckedIn,
 		DocumentCheckoutCanceled,
 		DocumentReverted,
+		DocumentTransitioned,
 	}
 }
 

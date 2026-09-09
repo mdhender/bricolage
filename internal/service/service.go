@@ -10,6 +10,7 @@ import (
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/store"
+	"github.com/mdhender/bricolage/internal/workflow"
 )
 
 // Service is the use-case layer: it owns transactions, writes events, and is
@@ -34,6 +35,13 @@ type Service struct {
 	// rather than a flag on the row because the lock is a lease: activity
 	// extends it and time ends it (DESIGN.md 5.1).
 	lockLease time.Duration
+
+	// engine moves documents between states. It is held rather than built per
+	// call so that there is one of it, and it is reached only through the two
+	// methods below: nothing else in this package may write documents.state,
+	// and the way to be sure of that is to have no other way to try
+	// (invariant 4).
+	engine *workflow.Engine
 }
 
 // Options configure a Service. Everything is resolved before New is called;
@@ -92,6 +100,12 @@ func New(db *store.DB, opts Options) (*Service, error) {
 	if s.lockLease <= 0 {
 		s.lockLease = config.DefaultLockLease
 	}
+
+	engine, err := workflow.New(db, opts.Clock)
+	if err != nil {
+		return nil, err
+	}
+	s.engine = engine
 	return s, nil
 }
 

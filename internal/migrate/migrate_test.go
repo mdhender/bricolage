@@ -244,3 +244,66 @@ func dumpSchema(t *testing.T, conn *sqlite.Conn) string {
 	}
 	return b.String()
 }
+
+// TestDisableForeignKeysDirective covers the one migration option this package
+// understands, and the reason it exists.
+//
+// SQLite's documented twelve-step ALTER procedure -- the only way to add a
+// table-level composite foreign key to an existing table -- begins by turning
+// foreign key enforcement off, because with it on "DROP TABLE" performs an
+// implicit "DELETE FROM" that cascades into every child row. 0005 rebuilds
+// "documents" that way, and a rebuild done with enforcement on would take
+// document_versions with it.
+func TestDisableForeignKeysDirective(t *testing.T) {
+	var carrying []string
+	for _, m := range All() {
+		if m.DisableForeignKeys {
+			carrying = append(carrying, m.Name)
+		}
+	}
+	if len(carrying) != 1 || carrying[0] != "0005_workflow.sql" {
+		t.Fatalf("migrations carrying the disable-foreign-keys directive: %v, want only 0005_workflow.sql\n"+
+			"Only the twelve-step rebuild justifies it. A migration that wants foreign keys off for\n"+
+			"convenience is a migration whose referential integrity nobody checked.", carrying)
+	}
+
+	// The option reaches sqlitemigration, positionally. An option list that
+	// drifted out of step with the scripts would disable them on the wrong
+	// migration, which is worse than not disabling them at all.
+	s, err := Schema(-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.MigrationOptions) != len(s.Migrations) {
+		t.Fatalf("%d options for %d migrations", len(s.MigrationOptions), len(s.Migrations))
+	}
+	for i, opt := range s.MigrationOptions {
+		want := All()[i].DisableForeignKeys
+		got := opt != nil && opt.DisableForeignKeys
+		if got != want {
+			t.Errorf("migration %d (%s): DisableForeignKeys = %v, want %v", i+1, All()[i].Name, got, want)
+		}
+	}
+}
+
+// TestDirectiveIsALine keeps a directive mentioned in prose from turning
+// anything on. Every migration is a wall of comment explaining itself, and one
+// of them explains this directive.
+func TestDirectiveIsALine(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{name: "on its own line", sql: "-- a comment\n-- migrate: disable-foreign-keys\nCREATE TABLE t (x INT);", want: true},
+		{name: "indented", sql: "  -- migrate: disable-foreign-keys\n", want: true},
+		{name: "mentioned mid-line", sql: "-- unlike 0005 this needs no -- migrate: disable-foreign-keys directive\n", want: false},
+		{name: "absent", sql: "CREATE TABLE t (x INT);", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hasDirective(tc.sql, disableForeignKeys); got != tc.want {
+				t.Errorf("hasDirective = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

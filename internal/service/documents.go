@@ -25,9 +25,11 @@ import (
 // the store rather than recorded beside it: an event that can be rolled back
 // separately from its change is not an audit record.
 //
-// Workflow state is out of scope for M3 (PLAN.md). Nothing here writes
-// documents.state, and nothing may: internal/workflow is its only writer
-// (invariant 4), and it arrives in M4.
+// Nothing in this file writes documents.state and nothing may:
+// internal/workflow is its only writer (invariant 4). What M4 adds here is the
+// placement of a new document into a workflow, which is not a transition --
+// a document does not move into its initial state, it starts there -- and the
+// two methods in workflow.go that hand a move to the engine.
 
 // DocumentView is a document and the version being looked at, which is what
 // every read of a document returns. They travel together because a document
@@ -63,6 +65,21 @@ func (s *Service) CreateDocument(ctx context.Context, actor domain.Identity, in 
 			et.KeyName, et.Kind, in.Kind, domain.ErrInvalid)
 	}
 
+	// The workflow that governs the document is resolved before it exists,
+	// because documents.workflow_id is NOT NULL with a composite foreign key
+	// to workflow_states: a document with no process is not a document this
+	// schema can hold. A kind with no workflow is a clean refusal naming the
+	// kind rather than a placement in somebody else's process.
+	wf, err := s.db.WorkflowFor(ctx, in.Kind, in.SiteID)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return DocumentView{}, fmt.Errorf(
+				"no workflow governs %s documents on site %d; configure one first: %w",
+				in.Kind, in.SiteID, domain.ErrConflict)
+		}
+		return DocumentView{}, err
+	}
+
 	now := s.Now()
 	uid, err := ids.New(now)
 	if err != nil {
@@ -74,6 +91,8 @@ func (s *Service) CreateDocument(ctx context.Context, actor domain.Identity, in 
 		SiteID:        in.SiteID,
 		Kind:          in.Kind,
 		ElementTypeID: et.ID,
+		WorkflowID:    wf.ID,
+		State:         wf.InitialState,
 		Title:         in.Title,
 		Slug:          in.Slug,
 		CoverDate:     in.CoverDate,
@@ -89,6 +108,8 @@ func (s *Service) CreateDocument(ctx context.Context, actor domain.Identity, in 
 				"element_type": et.KeyName,
 				"title":        in.Title,
 				"site":         in.SiteID,
+				"workflow":     wf.Name,
+				"state":        wf.InitialState,
 			},
 			OccurredAt: now,
 		},
@@ -303,17 +324,25 @@ func (s *Service) Document(ctx context.Context, actor domain.Identity, uid strin
 	if err != nil {
 		return DocumentView{}, err
 	}
+	return s.viewOf(ctx, doc)
+}
+
+// viewOf pairs a document with its current version, which is what every read
+// and every write returns. A document has no title of its own, so handing one
+// back alone would make the caller ask which version's.
+func (s *Service) viewOf(ctx context.Context, doc domain.Document) (DocumentView, error) {
 	view := DocumentView{Document: doc}
-	if doc.CurrentVersionID != 0 {
-		versions, err := s.db.VersionsForDocument(ctx, doc.ID)
-		if err != nil {
-			return DocumentView{}, err
-		}
-		for _, v := range versions {
-			if v.ID == doc.CurrentVersionID {
-				view.Version = v
-				break
-			}
+	if doc.CurrentVersionID == 0 {
+		return view, nil
+	}
+	versions, err := s.db.VersionsForDocument(ctx, doc.ID)
+	if err != nil {
+		return DocumentView{}, err
+	}
+	for _, v := range versions {
+		if v.ID == doc.CurrentVersionID {
+			view.Version = v
+			break
 		}
 	}
 	return view, nil

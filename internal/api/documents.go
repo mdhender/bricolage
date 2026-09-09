@@ -29,6 +29,13 @@ type documentResponse struct {
 	ElementType string `json:"element_type"`
 	Site        int64  `json:"site"`
 
+	// Workflow and State are where the document is in its editorial process
+	// (PLAN.md M4). The workflow is named by its uid, like everything else
+	// the API speaks; the state is the slug, which is what a transition names
+	// and what a grant scope matches on.
+	Workflow string `json:"workflow,omitempty"`
+	State    string `json:"state,omitempty"`
+
 	// CheckedOutBy is the uid of whoever holds a live lease, and empty when
 	// nobody does. An expired lease is nobody's, so it is reported as
 	// unlocked: the API answers the question the editor is asking, which is
@@ -87,15 +94,24 @@ func newVersionResponse(v domain.Version) *versionResponse {
 // does not query (DESIGN.md 3).
 type documentLookup func(id int64) (uid, name string)
 
-func newDocumentResponse(d domain.Document, v domain.Version, now time.Time, who documentLookup) documentResponse {
+// workflowLookup resolves an internal workflow id to the uid the API speaks.
+// Like documentLookup it is a closure the handler is given, because a
+// transport does not query the store (DESIGN.md 3).
+type workflowLookup func(id int64) string
+
+func newDocumentResponse(d domain.Document, v domain.Version, now time.Time, who documentLookup, wf workflowLookup) documentResponse {
 	out := documentResponse{
 		UID:         d.UID,
 		Kind:        d.Kind,
 		ElementType: d.ElementTypeKey,
 		Site:        d.SiteID,
+		State:       d.State,
 		CreatedAt:   d.CreatedAt,
 		UpdatedAt:   d.UpdatedAt,
 		Version:     newVersionResponse(v),
+	}
+	if d.WorkflowID != 0 && wf != nil {
+		out.Workflow = wf(d.WorkflowID)
 	}
 	if d.Lock.Held(now) && who != nil {
 		out.CheckedOutBy, out.CheckedOutName = who(d.Lock.UserID)
@@ -155,9 +171,10 @@ func (h *Handler) listDocuments(w http.ResponseWriter, r *http.Request, identity
 
 	now := h.svc.Now()
 	who := h.lookup(r)
+	wf := h.workflows(r)
 	out := make([]documentResponse, 0, len(docs))
 	for _, d := range docs {
-		out = append(out, newDocumentResponse(d, domain.Version{}, now, who))
+		out = append(out, newDocumentResponse(d, domain.Version{}, now, who, wf))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"documents": out})
 }
@@ -424,7 +441,37 @@ func (h *Handler) listElementTypes(w http.ResponseWriter, r *http.Request, _ dom
 
 // writeView renders a document and the version being looked at.
 func (h *Handler) writeView(w http.ResponseWriter, r *http.Request, status int, view service.DocumentView) {
-	writeJSON(w, status, newDocumentResponse(view.Document, view.Version, h.svc.Now(), h.lookup(r)))
+	writeJSON(w, status, newDocumentResponse(view.Document, view.Version, h.svc.Now(), h.lookup(r), h.workflows(r)))
+}
+
+// workflows resolves an internal workflow id to the uid the API speaks.
+//
+// It is a closure over one service call for the same reason lookup is, and it
+// caches within a request because a list of a hundred documents is usually one
+// workflow: the first miss loads them all and the rest are free.
+//
+// A failure to load leaves the name empty rather than failing the request. The
+// same reasoning as lookup: a document is readable whether or not the process
+// governing it can be named, and the transition routes -- where the workflow
+// actually decides something -- load it themselves and report the failure.
+func (h *Handler) workflows(r *http.Request) workflowLookup {
+	cache := map[int64]string{}
+	return func(id int64) string {
+		if hit, ok := cache[id]; ok {
+			return hit
+		}
+		uid := ""
+		if got, err := h.svc.Workflows(r.Context()); err == nil {
+			for _, wf := range got {
+				cache[wf.ID] = wf.UID
+				if wf.ID == id {
+					uid = wf.UID
+				}
+			}
+		}
+		cache[id] = uid
+		return uid
+	}
 }
 
 // lookup resolves an internal user id to the uid and name the API speaks.

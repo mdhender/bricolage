@@ -29,6 +29,13 @@ type docFixture struct {
 	etID   int64
 	author domain.User
 	other  domain.User
+
+	// workflow is the default story workflow, which the migration that adds
+	// the workflow tables seeds. Every document needs one: documents.
+	// workflow_id is NOT NULL with a composite foreign key to
+	// workflow_states, so a fixture that skipped it would be a fixture with
+	// foreign keys off (invariant 22).
+	workflow domain.Workflow
 }
 
 func newDocFixture(t *testing.T) *docFixture {
@@ -57,6 +64,10 @@ func newDocFixture(t *testing.T) *docFixture {
 	f.etID = et.ID
 	f.author = makeUser(t, db, "author@example.com")
 	f.other = makeUser(t, db, "other@example.com")
+
+	if f.workflow, err = db.WorkflowFor(t.Context(), domain.KindStory, f.siteID); err != nil {
+		t.Fatalf("WorkflowFor: %v", err)
+	}
 	return f
 }
 
@@ -69,6 +80,8 @@ func (f *docFixture) create(t *testing.T, title string) (domain.Document, domain
 		SiteID:        f.siteID,
 		Kind:          domain.KindStory,
 		ElementTypeID: f.etID,
+		WorkflowID:    f.workflow.ID,
+		State:         f.workflow.InitialState,
 		Title:         title,
 		Content:       `{"body":"first"}`,
 		CreatedBy:     f.author.ID,

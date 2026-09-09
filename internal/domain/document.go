@@ -122,6 +122,18 @@ type Document struct {
 	// (invariant 10).
 	ElementTypeKey string
 
+	// WorkflowID is the editorial process this document is in, and State is
+	// where it has got to. The pair is a composite foreign key to
+	// workflow_states, so a document can only ever name a state its own
+	// workflow declares (DESIGN.md 5.1).
+	//
+	// internal/workflow is the only writer of State (invariant 4). Nothing
+	// else assigns to it -- not a service method, not a migration fix-up --
+	// and internal/store exposes no way to set it that is not a whole
+	// transition.
+	WorkflowID int64
+	State      string
+
 	// AssignedTo is who the work is on, or 0. Due is when it is due, or the
 	// zero time. Both are written by M5; they are read here because the
 	// columns exist and a struct that omits half a row is a struct somebody
@@ -180,14 +192,18 @@ func (v Version) IsDraft() bool { return v.CheckedInAt.IsZero() }
 // Subject renders the document as the thing a privilege is resolved against
 // (DESIGN.md 7.2).
 //
-// Workflow and category are absent because M3 has neither; the resolver reads
-// them as unconstrained, and a grant that names one simply does not match a
-// document that has none. Both arrive with the milestone that creates their
-// tables, and this is the one function that has to learn about them.
+// The workflow and the state arrive with M4, and with them the grants.state
+// column that has been resolvable since M2 finally resolves against something
+// real: a grant scoped to state = "published" now matches exactly the
+// documents that are. Category is still absent because M7 creates categories;
+// the resolver reads it as unconstrained, and a grant that names one simply
+// does not match a document that has none.
 func (d Document) Subject() Subject {
 	return Subject{
 		SiteID:     d.SiteID,
 		DocKind:    d.Kind,
+		WorkflowID: d.WorkflowID,
+		State:      d.State,
 		DocumentID: d.ID,
 	}
 }

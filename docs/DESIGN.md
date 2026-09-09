@@ -288,16 +288,25 @@ Every operation above assumes it: checkout finds *the* draft, check-in closes
 those queries return an arbitrary row, and the failure would look like lost
 edits rather than like a bug.
 
-`workflow_id` and `state` are the last two columns to land. M3 creates this
+`workflow_id` and `state` were the last two columns to land. M3 created this
 table without them, because SQLite can neither add a foreign key to an existing
 column nor add a table-level composite one at all, and a column added without
 its `REFERENCES workflow_states(workflow_id, slug)` would never get it —
 the "rule column nothing reads" of invariant 6. M4 creates the workflow tables
 and rebuilds `documents` through SQLite's documented twelve-step `ALTER`
-procedure, which is the only way to attach the composite key, and adds the
+procedure — the only way to attach the composite key — and adds the
 `documents_queue` index that needs both columns. This is the same discipline
 0003 applied to the scope columns of `grants`: each arrives with the migration
 that creates the table it points at.
+
+The rebuild is the one place a migration turns foreign key enforcement off, and
+it has to: with it on, `DROP TABLE documents` performs an implicit `DELETE
+FROM` that cascades into `document_versions` and takes every version with it.
+`internal/migrate` reads a `-- migrate: disable-foreign-keys` directive from
+the file that needs it and hands `sqlitemigration` the option; enforcement
+returns when that migration's transaction commits. No other migration carries
+the directive, and none should: a migration that wants foreign keys off for
+convenience is a migration whose referential integrity nobody checked.
 
 Three defects in the original die here, by construction rather than by care:
 
@@ -448,7 +457,7 @@ was derived by sorting start-first, publish-last, and everything else by primary
 key — so "the order of the desks" was three buckets. Storing it costs one
 integer.
 
-Default story workflow, seeded by `cmsdb`:
+Default story workflow, seeded by the migration that creates these tables:
 
 ```
 draft ──submit──▶ review ──approve──▶ approved ──publish──▶ published
@@ -459,6 +468,19 @@ draft ──submit──▶ review ──approve──▶ approved ──publish
 ```
 
 Plus `archive` from `draft`/`review`/`published`, and `restore` from `archived`.
+
+It is seeded by the **migration**, not by `cmsdb seed`. `documents.workflow_id`
+is `NOT NULL` with a composite foreign key to `workflow_states`, so no document
+row may exist before a workflow does — and the migration that rebuilds
+`documents` has to place the rows already there. `cmsdb seed` reports what it
+finds rather than declaring the process a second time: a state machine written
+down twice is a state machine that drifts.
+
+`required_approvals` is 0 on every state of the default process, `review`
+included. `approvals_met` is enforced — the engine reads the column and refuses
+when the count falls short — but nothing can record an approval through the API
+until M11, and a default process no editor can move a document through is not
+one to ship. M11 raises it together with the API that satisfies it.
 
 Note that `published` is a **state, not an exit**. Bricolage removed a published
 document from workflow entirely, so a live document was nowhere. Here it stays,
@@ -513,9 +535,25 @@ Comments are a thread. Bricolage's entire collaboration story was one
 overwritten note per version. Keep `document_versions.note` as well — the
 check-in message is a different thing from a discussion.
 
+Both tables land in M4, one milestone before their API, because
+`approvals_met` and `comments_resolved` are two of the seven guards and a guard
+stubbed to "nothing exists" cannot refuse — so it is a guard nobody has tested.
+`internal/store` can write an approval and a comment from M4; the routes that
+let a person write one are M11.
+
 ## 6. The workflow engine
 
 `internal/workflow`.
+
+The engine is there — `Engine`, `Available`, `Do`, and the `check` they share.
+The vocabulary types below (`Guard`, `Effect`, `Transition`, `Workflow`) live
+in `internal/domain`, because `internal/store` converts rows to domain types
+and `internal/workflow` imports `internal/store`: a `Transition` declared in
+the engine's package could never be scanned out of `workflow_transitions`
+without inverting the dependency graph. They are pure data with pure functions
+over them, which is what `domain` is for, and the split changes none of the
+rules: the guards are still a closed set, and there is still exactly one
+`check`.
 
 ### 6.1 Guards are a closed vocabulary
 
@@ -588,10 +626,24 @@ than the action silently not existing.
 
 ### 6.3 Transitions are the only writer of `documents.state`
 
-No other code path assigns to that column. Not `store`, not a service method,
-not a migration fix-up. If something needs to move a document, it calls
-`workflow.Engine.Do`. Enforce this by keeping the state-writing statement inside
-`internal/workflow` and giving `store` no exported method that sets state alone.
+No other code path assigns to that column. Not a service method, not a
+migration fix-up. If something needs to move a document, it calls
+`workflow.Engine.Do`.
+
+This meets invariant 2 — no SQL string outside `internal/store`, ever — rather
+than trading against it. The statement lives in `internal/store/workflow.go`,
+inside `ApplyTransition`, which takes the engine's `check` as a callback and
+cannot run without it: the store loads the facts, hands them to the decision,
+and writes what it is told. There is no exported method that sets state alone,
+and `ApplyTransition` has exactly one caller. Both halves are enforced —
+`make lint` and CI grep for a second state-writing statement and for a second
+caller, and a test in `internal/workflow` walks the tree for the same two
+things.
+
+Creating a document is not a transition. A document does not *move* into its
+initial state, it starts there, so `CreateDocument` writes the column once at
+`INSERT` and the composite foreign key refuses any state the workflow does not
+declare.
 
 ### 6.4 Transactionality
 
@@ -918,7 +970,7 @@ cmsdb init            --db DIR                create DIR/cms.db, apply all migra
 cmsdb migrate status  --db DIR                show applied/pending
 cmsdb migrate up      --db DIR [--to N]       apply pending migrations
 cmsdb bootstrap admin --db DIR --email E --name N [--password-stdin]
-cmsdb seed            --db DIR [--demo]       default workflow, roles, site, element types
+cmsdb seed            --db DIR [--demo]       roles, site, element types; reports the workflow
 cmsdb check           --db DIR                integrity: FK check, orphaned resources, stuck leases
 cmsdb vacuum          --db DIR
 ```

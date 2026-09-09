@@ -366,16 +366,30 @@ kind, `schema` accepted but not yet validated), `documents`,
 transition that the actor is permitted to make.
 
 **Schema.** `workflows`, `workflow_states`, `workflow_transitions`, `approvals`
-(table only; the guard lands here, the API in M11).
+and `comments` (tables only; the guards land here, the APIs in M11), plus the
+twelve-step rebuild of `documents` that attaches `workflow_id` and `state` with
+their composite foreign key, and `grants.workflow_id`.
+
+`comments` is here rather than in M11 because `comments_resolved` is one of the
+seven guards and acceptance 3 wants a refusal from each. A guard stubbed to "no
+comments exist" cannot refuse, and one that cannot refuse has not been tested.
 
 **Work.**
-- `internal/workflow`: `Guard`, `Effect`, `Transition`, `Engine`,
-  `Available`, `Do`, and the unexported `check` they share.
+- `Guard`, `Effect`, `Transition`, `Workflow` in `internal/domain`; `Engine`,
+  `Available`, `Do`, and the unexported `check` they share in
+  `internal/workflow`. The types are one level down because `internal/store`
+  converts rows to domain types and `internal/workflow` imports it
+  (`DESIGN.md` §6).
 - All seven guards from `DESIGN.md` §6.1, each with enforcement.
 - All four effects.
-- `Do` in one transaction: check → update → event → enqueue.
-- `cmsdb seed` gains the default story workflow from `DESIGN.md` §5.4.
-- API: `GET`/`POST /api/v1/documents/{uid}/transitions`.
+- `Do` in one transaction: check → update → event → enqueue. The enqueue step
+  arrives with the queue in M6; there is no empty hook waiting for it.
+- The default story workflow of `DESIGN.md` §5.4 is seeded by the **migration**,
+  not by `cmsdb seed`: `documents.workflow_id` is `NOT NULL`, so no document
+  row may exist before a workflow does, and the rebuild has to place the rows
+  already there. `cmsdb seed` reports it.
+- API: `GET`/`POST /api/v1/documents/{uid}/transitions`, and `GET
+  /api/v1/workflows` so a client can render a process it did not configure.
 - `earl doc transitions`, `earl doc do`.
 
 **Acceptance.**
@@ -385,18 +399,26 @@ transition that the actor is permitted to make.
    returns 409 — **including** when the caller is an administrator.
 3. For each of the seven guards: one test where it passes, one where it refuses,
    and the refusal names the guard.
-4. A grep for writes to `documents.state` finds them only inside
-   `internal/workflow`. Enforce with a test that walks the AST, or a CI grep.
-5. `Available` and `Do` disagree in no case. Property test: for every transition
-   `Available` marks permitted, `Do` succeeds; for every one it refuses, `Do`
-   returns the same guard error.
+4. A grep for writes to `documents.state` finds exactly one statement, in
+   `internal/store/workflow.go`, and `store.ApplyTransition` — which cannot run
+   without the engine's `check` — has exactly one caller, in
+   `internal/workflow`. That is what satisfies invariant 4 and invariant 2 at
+   once (`DESIGN.md` §6.3). Enforced by a test that walks the tree and by a CI
+   grep.
+5. `Available` and `Do` disagree in no case. Property test over every state and
+   every privilege: for every transition `Available` marks permitted, `Do`
+   succeeds; for every one it refuses, `Do` returns the same guard error. Both
+   are asked with the same note — the empty one — so `note_required` refuses in
+   both, and `Available` marks such a transition `NeedsNote` so a client offers
+   a note field rather than treating the refusal as final.
 6. A failed guard rolls back cleanly: state, events, and jobs are all unchanged.
 7. `approvals_met` counts approvals for the **current version** only; adding a
    new version drops the count to zero.
 
-**Out of scope.** Publishing from `publishable` states. Comment resolution
-guard may be stubbed to "no comments exist" until M11 — but the guard must
-exist and be enforced, not merely named.
+**Out of scope.** Publishing from `publishable` states. The APIs that write an
+approval and a comment (M11); their tables and the two guards that read them
+are here, and `internal/store` can write one so that the guards are tested
+against real data rather than against an absence.
 
 ---
 
@@ -591,13 +613,14 @@ up after itself.
 
 **Goal.** People can talk about a document and sign off on it.
 
-**Schema.** `comments` (from M3 tables if deferred), `approvals` API.
+**Schema.** None. `comments` and `approvals` are M4's, and both guards already
+read them; what M11 adds is the API in front of them, and the `UPDATE` raising
+`workflow_states.required_approvals` on the default workflow's `review`, which
+M4 left at 0 because nothing could yet satisfy it.
 
 **Work.**
 - Comment threads, replies, resolution.
 - Approve and withdraw approval.
-- Wire `GuardCommentsResolved` and `GuardApprovalsMet` to real data, replacing
-  any M4 stub.
 - API and `earl` commands.
 
 **Acceptance.**

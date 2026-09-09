@@ -101,6 +101,14 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 		Instance: reqctx.RequestID(r.Context()),
 	}
 
+	// A guard refusal names the guard, which is the extension member
+	// DESIGN.md 12 shows. It is filled in here rather than at the handler,
+	// because this is the one function that turns an error into a response and
+	// a second place that knew about guards would be a second place to forget.
+	if g, ok := domain.GuardOf(err); ok {
+		p.Guard = string(g)
+	}
+
 	switch {
 	case status < http.StatusInternalServerError:
 		p.Detail = err.Error()

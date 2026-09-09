@@ -13,7 +13,7 @@ RELEASE_DIR := deploy/linux/amd64
 DEV_DB  ?= ./var
 
 .DEFAULT_GOAL := check
-.PHONY: check build test race vet fmt lint no-mkdir no-dev-routes tagged dev init seed bootstrap status release clean help
+.PHONY: check build test race vet fmt lint no-mkdir no-dev-routes one-state-writer tagged dev init seed bootstrap status release clean help
 
 ## check: the full gate. Run this before opening a PR.
 check: fmt vet lint build test race tagged
@@ -52,7 +52,7 @@ fmt:
 	fi
 
 ## lint: the greps that catch the rules nobody notices breaking.
-lint: no-mkdir no-dev-routes
+lint: no-mkdir no-dev-routes one-state-writer
 
 ## no-mkdir: nothing in this system creates a directory (invariant 19).
 ##
@@ -80,6 +80,27 @@ no-dev-routes:
 		echo "$$callers"; exit 1; \
 	fi
 	$(GO) test -run 'TestDevRoutes|TestRouteTable' ./internal/server/ ./internal/web/devroutes/
+
+## one-state-writer: internal/workflow is the only writer of documents.state
+## (invariant 4), and all SQL lives in internal/store (invariant 2).
+##
+## Both hold at once because the one statement that writes the column is inside
+## store.ApplyTransition, which cannot run without the decision function the
+## engine hands it. The first grep finds a second statement; the second finds a
+## second caller. Neither replaces the test, which walks the tree and also
+## covers the INSERT that places a new document.
+one-state-writer:
+	@if grep -rnE 'SET[[:space:]]+state[[:space:]]*=' ./cmd ./internal --include='*.go' \
+		| grep -v '_test\.go:' | grep -v '^\./internal/store/workflow\.go:'; then \
+		echo "lint: documents.state is written by one statement, in internal/store/workflow.go (invariants 2 and 4)"; exit 1; \
+	fi
+	@callers=$$(grep -rl 'ApplyTransition' ./cmd ./internal --include='*.go' \
+		| grep -v '_test\.go$$' | grep -v '^\./internal/store/'); \
+	if [ "$$callers" != "./internal/workflow/engine.go" ]; then \
+		echo "lint: ApplyTransition has one caller, in internal/workflow (invariant 4, DESIGN.md 6.3); found:"; \
+		echo "$$callers"; exit 1; \
+	fi
+	$(GO) test -run 'TestOnlyOneStatementWritesDocumentState|TestApplyTransitionHasOneCaller' ./internal/workflow/
 
 ## dev: run cmsd in development, behind the Caddy service, against ./var.
 ##

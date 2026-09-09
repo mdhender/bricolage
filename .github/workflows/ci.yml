@@ -62,6 +62,23 @@ jobs:
             echo "devroutes.Register must have exactly one call site; found: $callers"; exit 1
           fi
 
+      # Invariant 4 and invariant 2 at once (PLAN.md M4 acceptance 4).
+      # internal/workflow is the only writer of documents.state, and all SQL
+      # lives in internal/store. Both hold because the one statement that
+      # writes the column is inside store.ApplyTransition, which cannot run
+      # without the decision function the engine hands it.
+      - name: one statement writes documents.state
+        run: |
+          if grep -rnE 'SET[[:space:]]+state[[:space:]]*=' ./cmd ./internal --include='*.go' \
+             | grep -v '_test\.go:' | grep -v '^\./internal/store/workflow\.go:'; then
+            echo "documents.state is written by one statement, in internal/store/workflow.go"; exit 1
+          fi
+          callers=$(grep -rl 'ApplyTransition' ./cmd ./internal --include='*.go' \
+            | grep -v '_test\.go$' | grep -v '^\./internal/store/')
+          if [ "$callers" != "./internal/workflow/engine.go" ]; then
+            echo "ApplyTransition must have exactly one caller, in internal/workflow; found: $callers"; exit 1
+          fi
+
       # PLAN.md M0 acceptance 4. pkg/way is deleted and nothing replaces it;
       # the route table is net/http.ServeMux patterns. The documents may still
       # say so, which is why this looks at Go source and at the tree.

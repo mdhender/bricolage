@@ -34,11 +34,13 @@ go test -run TestResolve ./internal/config/  # one test
 go test -tags production ./internal/buildenv/   # the tagged half of the interlock
 ```
 
-`make lint` is two greps, not a linter binary: nothing may call `os.Mkdir`/
-`os.MkdirAll` (invariant 19), and only `internal/web/devroutes` may register a
+`make lint` is greps, not a linter binary: nothing may call `os.Mkdir`/
+`os.MkdirAll` (invariant 19); only `internal/web/devroutes` may register a
 `/__development/` pattern, with exactly one caller of `devroutes.Register`
-(invariant 16). CI adds a third: `time.Now()` appears only in `main` and
-`internal/clock` (invariant 3).
+(invariant 16); and `documents.state` is written by one statement, in
+`internal/store/workflow.go`, whose `ApplyTransition` has one caller, in
+`internal/workflow` (invariants 2 and 4). CI adds a fourth: `time.Now()`
+appears only in `main` and `internal/clock` (invariant 3).
 
 `make release` cross-compiles for linux/amd64 with `-tags production`. Never run
 it as a side effect of another task, and never deploy.
@@ -106,35 +108,51 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M3 are complete and M4 has not started. `cmsdb` can `init`,
+M0 through M4 are complete and M5 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
 refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
-the session, identity, grant, document, version, diff, and history routes plus
-`/healthz`. `earl` can `login` (with `--dev`), `whoami`, `logout`,
-`admin grant`, `admin assign`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events`.
+the session, identity, grant, document, version, diff, history, transition, and
+workflow routes plus `/healthz`. `earl` can `login` (with `--dev`), `whoami`,
+`logout`, `admin grant`, `admin assign`, and
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do`.
 
-The schema is four migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is five migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
-`sessions`), and `0004_documents.sql` (`element_types`, `documents`,
+`sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
-and `grants.document_id`). `grants` carries the scope columns whose target
-table exists; the rest arrive with the migration that creates theirs, because
-SQLite cannot add a foreign key to a column that already exists.
-`internal/domain` and `internal/authz` already carry and resolve the whole
-scope.
+and `grants.document_id`), and `0005_workflow.sql` (`workflows`,
+`workflow_states`, `workflow_transitions`, `approvals`, `comments`,
+`grants.workflow_id`, the default story workflow, and the rebuild of
+`documents`). `grants` carries the scope columns whose target table exists; the
+rest arrive with the migration that creates theirs, because SQLite cannot add a
+foreign key to a column that already exists. `internal/domain` and
+`internal/authz` already carry and resolve the whole scope.
 
-`documents` has no `workflow_id` and no `state` yet, deliberately: the
-composite foreign key to `workflow_states` cannot be added by `ALTER TABLE`, so
-M4 creates the workflow tables and rebuilds `documents` through SQLite's
-twelve-step procedure. Nothing writes `documents.state` today and nothing may —
-`internal/workflow` is its only writer (invariant 4).
+0005 is the one migration that carries the `-- migrate: disable-foreign-keys`
+directive, and it needs it: `documents` is rebuilt through SQLite's documented
+twelve-step `ALTER` procedure — the only way to attach the composite foreign
+key `(workflow_id, state) REFERENCES workflow_states(workflow_id, slug)` — and
+with enforcement on, `DROP TABLE` performs an implicit `DELETE FROM` that
+cascades into `document_versions`.
 
-`internal/{migrate,store,ids,clock,domain,authz,events,service,api,reqctx}` are
-real. `internal/{workflow,publish,jobs,render,web}` are still a `doc.go`
-stating the package's responsibility and permitted imports — read that doc
-before adding the first real file to one.
+**The default story workflow is seeded by that migration, not by `cmsdb seed`.**
+`documents.workflow_id` is `NOT NULL`, so no document row may exist before a
+workflow does, and the rebuild has to place the rows already there. `seed`
+reports what it finds; the state machine is written down once, in SQL.
+
+Exactly one statement writes `documents.state`: the `UPDATE` inside
+`store.ApplyTransition`, which takes the engine's check as a callback and
+cannot run without it. `internal/workflow` is its only caller (invariant 4),
+all the SQL is still in `internal/store` (invariant 2), and `make lint` plus a
+test in `internal/workflow` enforce both. Creating a document is not a
+transition — it starts in the initial state rather than moving into it — so
+`CreateDocument` writes the column once at `INSERT`.
+
+`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,api,reqctx}`
+are real. `internal/{publish,jobs,render,web}` are still a `doc.go` stating the
+package's responsibility and permitted imports — read that doc before adding
+the first real file to one.
 
 `--db` names a **directory** that must already exist; the database inside it is
 always `cms.db`. Only `cmsdb init` creates a database and only `cmsdb` migrates
@@ -154,6 +172,9 @@ work walks into:
 - Nothing creates a directory — not `cmsdb`, not `cmsd`, not a test helper.
 - All SQL lives in `internal/store`. `internal/domain` does no I/O and imports
   nothing local.
+- `internal/workflow` is the only thing that moves a document. Nothing else
+  reaches `store.ApplyTransition`, and there is no route, method, or flag that
+  sets a state directly.
 - `time.Now()` only in `main` and `internal/clock`; everything else takes a
   `Clock`.
 - One shutdown path, reached by SIGTERM, `--timeout`, and the dev route alike.

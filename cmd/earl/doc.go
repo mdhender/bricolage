@@ -28,6 +28,8 @@ type documentResponse struct {
 	ElementType    string     `json:"element_type"`
 	Site           int64      `json:"site"`
 	CheckedOutBy   string     `json:"checked_out_by"`
+	Workflow       string     `json:"workflow"`
+	State          string     `json:"state"`
 	CheckedOutName string     `json:"checked_out_by_name"`
 	LockExpiresAt  *time.Time `json:"lock_expires_at"`
 	CreatedAt      time.Time  `json:"created_at"`
@@ -63,6 +65,8 @@ func newDocCmd() *cobra.Command {
 		newDocRevertCmd(),
 		newDocDiffCmd(),
 		newDocEventsCmd(),
+		newDocTransitionsCmd(),
+		newDocDoCmd(),
 	)
 	return cmd
 }
@@ -247,14 +251,14 @@ func newDocListCmd() *cobra.Command {
 				return nil
 			}
 			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "UID\tKIND\tTYPE\tCHECKED OUT BY\tUPDATED")
+			fmt.Fprintln(tw, "UID\tKIND\tTYPE\tSTATE\tCHECKED OUT BY\tUPDATED")
 			for _, d := range out.Documents {
 				held := "-"
 				if d.CheckedOutBy != "" {
 					held = d.CheckedOutName
 				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-					d.UID, d.Kind, d.ElementType, held, d.UpdatedAt.Format(time.RFC3339))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+					d.UID, d.Kind, d.ElementType, d.State, held, d.UpdatedAt.Format(time.RFC3339))
 			}
 			return tw.Flush()
 		},
@@ -564,6 +568,9 @@ func printDoc(w io.Writer, doc documentResponse, asJSON bool, verb string) error
 	fmt.Fprintf(tw, "uid\t%s\n", doc.UID)
 	fmt.Fprintf(tw, "kind\t%s\n", doc.Kind)
 	fmt.Fprintf(tw, "element type\t%s\n", doc.ElementType)
+	if doc.State != "" {
+		fmt.Fprintf(tw, "state\t%s\n", doc.State)
+	}
 	if doc.CheckedOutBy != "" {
 		fmt.Fprintf(tw, "checked out by\t%s\n", doc.CheckedOutName)
 		if doc.LockExpiresAt != nil {
@@ -600,4 +607,128 @@ func formatCheckedIn(t *time.Time) string {
 		return "never"
 	}
 	return t.Format(time.RFC3339)
+}
+
+// transitionsResponse is GET /api/v1/documents/{uid}/transitions.
+type transitionsResponse struct {
+	State       string `json:"state"`
+	Transitions []struct {
+		To        string   `json:"to"`
+		Name      string   `json:"name"`
+		Privilege string   `json:"privilege"`
+		Permitted bool     `json:"permitted"`
+		Reason    string   `json:"reason"`
+		Guard     string   `json:"guard"`
+		NeedsNote bool     `json:"needs_note"`
+		Guards    []string `json:"guards"`
+		Effects   []string `json:"effects"`
+	} `json:"transitions"`
+}
+
+// newDocTransitionsCmd is PLAN.md M4 acceptance 1: every transition out of the
+// current state, including the refused ones with a reason.
+//
+// Printing the refusals is the point. An action that silently does not exist
+// teaches nobody anything and sends an editor to an administrator; "Approve --
+// needs one more approval" tells them what to do next.
+func newDocTransitionsCmd() *cobra.Command {
+	var (
+		server string
+		asJSON bool
+	)
+	cmd := &cobra.Command{
+		Use:   "transitions UID",
+		Short: "List the transitions out of a document's current state",
+		Long: "List the transitions out of a document's current state.\n\n" +
+			"Refused transitions are listed too, with the reason and the guard that\n" +
+			"refused. A transition marked \"note\" needs one: pass it with\n" +
+			"\"earl doc do UID --to STATE --note ...\".",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+			var out transitionsResponse
+			if err := client.Get(cmd.Context(), docPath(args[0])+"/transitions", &out); err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(w, out)
+			}
+			fmt.Fprintf(w, "state: %s\n", out.State)
+			if len(out.Transitions) == 0 {
+				fmt.Fprintln(w, "no transitions out of this state")
+				return nil
+			}
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "TO\tNAME\tNEEDS\tALLOWED\tWHY NOT")
+			for _, t := range out.Transitions {
+				needs := t.Privilege
+				if t.NeedsNote {
+					needs += ", note"
+				}
+				allowed := "yes"
+				if !t.Permitted {
+					allowed = "no"
+				}
+				why := t.Reason
+				if why != "" && t.Guard != "" {
+					why = fmt.Sprintf("%s (%s)", why, t.Guard)
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", t.To, t.Name, needs, allowed, why)
+			}
+			return tw.Flush()
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	return cmd
+}
+
+// newDocDoCmd performs one transition.
+//
+// It is "do" rather than "move" or "set-state" because the API models a
+// transition as a subresource rather than as a state to assign: there is no
+// way to say "put this document in published", only "make this declared move".
+func newDocDoCmd() *cobra.Command {
+	var (
+		server string
+		asJSON bool
+		to     string
+		note   string
+	)
+	cmd := &cobra.Command{
+		Use:   "do UID --to STATE",
+		Short: "Perform one workflow transition",
+		Long: "Perform one workflow transition.\n\n" +
+			"The move must be one the workflow declares out of the document's current\n" +
+			"state; anything else is refused, whoever is asking. Run\n" +
+			"\"earl doc transitions UID\" to see what is available and why.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+			req := map[string]any{"to": to}
+			if note != "" {
+				req["note"] = note
+			}
+			var doc documentResponse
+			if err := client.Do(cmd.Context(), http.MethodPost,
+				docPath(args[0])+"/transitions", req, &doc); err != nil {
+				return err
+			}
+			return printDoc(cmd.OutOrStdout(), doc, asJSON, "moved to "+doc.State)
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	cmd.Flags().StringVar(&to, "to", "", "the state to move to")
+	cmd.Flags().StringVar(&note, "note", "", "the note the transition carries, when one is required")
+	_ = cmd.MarkFlagRequired("to")
+	return cmd
 }

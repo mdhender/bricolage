@@ -26,6 +26,7 @@ import (
 const documentColumns = `
 	d.id AS id, d.uid AS uid, d.site_id AS site_id, d.kind AS kind,
 	d.element_type_id AS element_type_id, et.key_name AS element_type_key,
+	d.workflow_id AS workflow_id, d.state AS state,
 	d.assigned_to AS assigned_to, d.due_at AS due_at,
 	d.locked_by AS locked_by, d.lock_expires_at AS lock_expires_at,
 	d.current_version_id AS current_version_id, d.live_version_id AS live_version_id,
@@ -158,6 +159,18 @@ type NewDocument struct {
 	Kind          string
 	ElementTypeID int64
 
+	// WorkflowID and State place the document in an editorial process. They
+	// are supplied by the caller rather than defaulted here, because the
+	// workflow that governs a document is a decision -- which workflow, on
+	// which site, for which kind -- and this package decides nothing.
+	//
+	// State is the workflow's initial state and nothing else: creating a
+	// document is not a transition, and internal/workflow remains the only
+	// thing that moves one (invariant 4). The composite foreign key refuses
+	// a state the workflow does not declare, whatever is passed.
+	WorkflowID int64
+	State      string
+
 	Title     string
 	Slug      string
 	CoverDate string
@@ -186,13 +199,15 @@ func (db *DB) CreateDocument(ctx context.Context, n NewDocument) (domain.Documen
 	)
 	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
 		err := run(conn, "creating document "+n.UID, `
-			INSERT INTO documents (uid, site_id, kind, element_type_id, created_at, updated_at)
-			VALUES (:uid, :site_id, :kind, :element_type_id, :created_at, :updated_at)`,
+			INSERT INTO documents (uid, site_id, kind, element_type_id, workflow_id, state, created_at, updated_at)
+			VALUES (:uid, :site_id, :kind, :element_type_id, :workflow_id, :state, :created_at, :updated_at)`,
 			func(stmt *sqlite.Stmt) {
 				stmt.SetText(":uid", n.UID)
 				stmt.SetInt64(":site_id", n.SiteID)
 				stmt.SetText(":kind", n.Kind)
 				stmt.SetInt64(":element_type_id", n.ElementTypeID)
+				stmt.SetInt64(":workflow_id", n.WorkflowID)
+				stmt.SetText(":state", n.State)
 				stmt.SetText(":created_at", formatTime(n.CreatedAt))
 				stmt.SetText(":updated_at", formatTime(n.CreatedAt))
 			}, nil)
@@ -381,6 +396,8 @@ func scanDocument(stmt *sqlite.Stmt) (domain.Document, error) {
 		Kind:           stmt.GetText("kind"),
 		ElementTypeID:  stmt.GetInt64("element_type_id"),
 		ElementTypeKey: stmt.GetText("element_type_key"),
+		WorkflowID:     stmt.GetInt64("workflow_id"),
+		State:          stmt.GetText("state"),
 		DueAt:          due,
 		Lock:           domain.Lock{ExpiresAt: lockExpires},
 		CreatedAt:      created,

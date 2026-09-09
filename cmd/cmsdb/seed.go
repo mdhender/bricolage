@@ -75,10 +75,16 @@ var seedRoles = []struct {
 // violate, detected by result code (invariant 11), so a second run reports
 // what was already there rather than failing or duplicating it.
 //
-// The default workflow the design also asks of seed arrives in M4, with the
-// workflow tables. Seeding a workflow into a schema that has no workflow_states
-// is not possible, and naming it here without creating it is the "rule column
-// nothing reads" that invariant 6 is about.
+// The default story workflow is not created here. It is created by the
+// migration that adds the workflow tables, because documents.workflow_id is
+// NOT NULL with a composite foreign key to workflow_states: no document row
+// may exist before a workflow does, and a database that already holds
+// documents has nowhere to put them otherwise
+// (internal/migrate/schema/0005_workflow.sql). DESIGN.md 5.4 says the default
+// story workflow is seeded by "cmsdb", and "cmsdb init" is cmsdb. What seed
+// does is report it, so that "what does a fresh database contain" is still one
+// command's output -- and so that the state machine is written down once
+// rather than twice.
 func newSeedCmd() *cobra.Command {
 	var (
 		dir  string
@@ -201,6 +207,18 @@ func seed(ctx context.Context, db *store.DB, out io.Writer) error {
 		return err
 	}
 
+	workflows, err := db.ListWorkflows(ctx)
+	if err != nil {
+		return err
+	}
+	if len(workflows) == 0 {
+		return fmt.Errorf("this database has no workflow; the migration that creates the workflow tables seeds the default one, so a database with none has been edited by hand")
+	}
+	for _, w := range workflows {
+		fmt.Fprintf(out, "workflow: %s (%s, %s documents, starts in %q, %d states, %d transitions)\n",
+			w.UID, w.Name, w.Kind, w.InitialState, len(w.States), len(w.Transitions))
+	}
+
 	fmt.Fprintln(out, "seeded")
 	return nil
 }
@@ -252,6 +270,13 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// The workflow the sample document enters. Resolving it rather than
+	// assuming one is the same rule the service follows: a document with no
+	// process is not a document this schema can hold.
+	wf, err := db.WorkflowFor(ctx, domain.KindStory, site)
+	if err != nil {
+		return err
+	}
 	uid, err := ids.New(now)
 	if err != nil {
 		return err
@@ -262,21 +287,26 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 		SiteID:        site,
 		Kind:          domain.KindStory,
 		ElementTypeID: et.ID,
+		WorkflowID:    wf.ID,
+		State:         wf.InitialState,
 		Title:         demoTitle,
 		Slug:          "quick-brown-fox",
 		Content:       `{"body":"The quick brown fox jumps over the lazy dog."}`,
 		CreatedBy:     author.ID,
 		CreatedAt:     now,
 		Event: domain.Event{
-			Type:       events.DocumentCreated,
-			ActorID:    author.ID,
-			Payload:    map[string]any{"uid": uid, "title": demoTitle, "seed": true},
+			Type:    events.DocumentCreated,
+			ActorID: author.ID,
+			Payload: map[string]any{
+				"uid": uid, "title": demoTitle, "seed": true,
+				"workflow": wf.Name, "state": wf.InitialState,
+			},
 			OccurredAt: now,
 		},
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "demo: %s (%s, an open working draft)\n", demoTitle, doc.UID)
+	fmt.Fprintf(out, "demo: %s (%s, an open working draft in %q)\n", demoTitle, doc.UID, doc.State)
 	return nil
 }

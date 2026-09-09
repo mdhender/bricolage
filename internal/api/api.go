@@ -92,9 +92,10 @@ func Register(mux Mux, deps Deps) {
 	handle("POST "+Prefix+"grants", h.authenticated(h.createGrant))
 	handle("POST "+Prefix+"users/{uid}/roles", h.authenticated(h.assignRole))
 
-	// Documents, versions, and history (PLAN.md M3). Transitions are
-	// deliberately absent: the workflow engine is M4, and a document has no
-	// state until it exists.
+	// Documents, versions, and history (PLAN.md M3), and the transitions
+	// M4 adds. Transitions are a subresource on purpose (DESIGN.md 12): GET
+	// says what the state machine permits and why, POST performs one. There
+	// is deliberately no route here that sets a state directly.
 	handle("GET "+Prefix+"documents", h.authenticated(h.listDocuments))
 	handle("POST "+Prefix+"documents", h.authenticated(h.createDocument))
 	handle("GET "+Prefix+"documents/{uid}", h.authenticated(h.showDocument))
@@ -107,8 +108,11 @@ func Register(mux Mux, deps Deps) {
 	handle("GET "+Prefix+"documents/{uid}/versions/{n}", h.authenticated(h.showVersion))
 	handle("GET "+Prefix+"documents/{uid}/diff", h.authenticated(h.diffDocument))
 	handle("GET "+Prefix+"documents/{uid}/events", h.authenticated(h.documentEvents))
+	handle("GET "+Prefix+"documents/{uid}/transitions", h.authenticated(h.listTransitions))
+	handle("POST "+Prefix+"documents/{uid}/transitions", h.authenticated(h.doTransition))
 
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
+	handle("GET "+Prefix+"workflows", h.authenticated(h.listWorkflows))
 }
 
 // unavailable answers a request that reached a route built without a service.

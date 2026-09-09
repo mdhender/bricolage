@@ -190,6 +190,15 @@ gofmt -l .
 grep -rn 'os\.MkdirAll\|os\.Mkdir(' ./cmd ./internal    # must print nothing
 ```
 
+`make lint` runs that grep and the two that keep invariants 16 and 4. Run
+`make check` rather than remembering the list.
+
+A migration that needs foreign key enforcement off while it runs says so with
+`-- migrate: disable-foreign-keys` on a line of its own; `internal/migrate`
+reads the directive. Exactly one migration has it, and only SQLite's documented
+twelve-step `ALTER` procedure justifies it — see
+`internal/migrate/schema/0005_workflow.sql`.
+
 - Run commands with `go run ./cmd/<name>`. Do not make a `go build` step a
   prerequisite for running anything, and do not add a build tag — `production`
   is the only one, it is described below, and it gates no code.
@@ -231,7 +240,12 @@ These are not style preferences. Violating one is a bug even if the tests pass.
    takes a `Clock`. This is what makes leases, schedules, and due dates
    testable.
 4. **`internal/workflow` is the only writer of `documents.state`.** If something
-   needs to move a document, it calls the engine.
+   needs to move a document, it calls the engine. This does not bend
+   invariant 2: the one statement that writes the column lives in
+   `internal/store/workflow.go`, inside `ApplyTransition`, which takes the
+   engine's `check` as a callback and cannot run without it, and which has
+   exactly one caller. `make lint` and CI grep for a second statement and for a
+   second caller (`DESIGN.md` §6.3).
 5. **`Available` and `Do` share one `check` function.** The UI must be rendered
    from the same code that enforces the rule. This is the structural fix for the
    worst defect in the system we learned from, where the permission check lived

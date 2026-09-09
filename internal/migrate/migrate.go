@@ -46,6 +46,21 @@ var schemaFS embed.FS
 // a failure at startup rather than a migration silently skipped.
 var fileName = regexp.MustCompile(`^([0-9]{4})_[a-z0-9_]+\.sql$`)
 
+// disableForeignKeys is the directive a migration writes to ask for foreign
+// key enforcement to be off while it runs.
+//
+// Exactly one thing needs it, and it is not a convenience: SQLite's documented
+// twelve-step ALTER procedure -- the only way to add a table-level composite
+// foreign key to an existing table -- begins by turning foreign keys off, and
+// with them on "DROP TABLE" performs an implicit "DELETE FROM" that cascades
+// into every child row. A rebuild of "documents" with enforcement on would
+// take document_versions with it (DESIGN.md 5.1).
+//
+// It is a directive in the file rather than a table in this package because
+// the migration that needs it is the migration that says so, and a list kept
+// somewhere else is a list that drifts from the files it describes.
+const disableForeignKeys = "-- migrate: disable-foreign-keys"
+
 // Migration is one embedded file: what it is called and what it does.
 type Migration struct {
 	// Name is the file name, which carries the sequence number.
@@ -54,6 +69,11 @@ type Migration struct {
 	// SQL is the file's contents, run inside one transaction by
 	// sqlitemigration.
 	SQL string
+
+	// DisableForeignKeys reports whether the file carries the
+	// "-- migrate: disable-foreign-keys" directive. See the constant above
+	// for the one procedure that needs it and why.
+	DisableForeignKeys bool
 }
 
 // Version is the PRAGMA user_version a database has once this migration has
@@ -91,13 +111,30 @@ var all = func() []Migration {
 		if err != nil {
 			panic(fmt.Sprintf("migrate: reading schema/%s: %v", e.Name(), err))
 		}
-		ms = append(ms, Migration{Name: e.Name(), SQL: string(b)})
+		ms = append(ms, Migration{
+			Name:               e.Name(),
+			SQL:                string(b),
+			DisableForeignKeys: hasDirective(string(b), disableForeignKeys),
+		})
 	}
 	if len(ms) == 0 {
 		panic("migrate: no migrations are embedded")
 	}
 	return ms
 }()
+
+// hasDirective reports whether sql carries directive on a line of its own.
+//
+// A line rather than a substring: a directive mentioned inside a comment that
+// explains why some other migration does not need it must not turn it on.
+func hasDirective(sql, directive string) bool {
+	for line := range strings.SplitSeq(sql, "\n") {
+		if strings.TrimSpace(line) == directive {
+			return true
+		}
+	}
+	return false
+}
 
 // All returns the embedded migrations in apply order.
 func All() []Migration { return append([]Migration(nil), all...) }
@@ -134,10 +171,14 @@ func Schema(n int) (sqlitemigration.Schema, error) {
 		return sqlitemigration.Schema{}, fmt.Errorf("migration %d: this binary embeds %d", n, len(all))
 	}
 	scripts := make([]string, n)
+	options := make([]*sqlitemigration.MigrationOptions, n)
 	for i := range n {
 		scripts[i] = all[i].SQL
+		if all[i].DisableForeignKeys {
+			options[i] = &sqlitemigration.MigrationOptions{DisableForeignKeys: true}
+		}
 	}
-	return sqlitemigration.Schema{AppID: AppID, Migrations: scripts}, nil
+	return sqlitemigration.Schema{AppID: AppID, Migrations: scripts, MigrationOptions: options}, nil
 }
 
 // Apply runs every migration up to version n against conn, stamping the
