@@ -78,8 +78,30 @@ apt install -y ufw
 adduser --disabled-password --gecos "" deploy
 install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
 install -m 600 -o deploy -g deploy /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
-adduser deploy sudo
 ```
+
+**`deploy` needs passwordless sudo, and adding it to the `sudo` group is not
+enough.** The account is created with `--disabled-password`, so it has no
+password to type; group membership alone leaves every `sudo` failing with
+`sudo: interactive authentication is required`. Give it a drop-in instead —
+and validate the file *before* installing it, because a malformed file under
+`/etc/sudoers.d/` breaks `sudo` for everyone, which on a droplet whose root
+login you are about to disable is the console-recovery scenario this whole
+section exists to avoid:
+
+```sh
+cat > /root/deploy.sudoers <<'EOF'
+deploy ALL=(ALL) NOPASSWD:ALL
+EOF
+visudo -c -f /root/deploy.sudoers          # must say "parsed OK"
+install -m 0440 -o root -g root /root/deploy.sudoers /etc/sudoers.d/deploy
+rm -f /root/deploy.sudoers
+visudo -c                                   # the whole set, including the new file
+```
+
+`0440` and `root:root` are what `sudo` requires; it ignores a file with looser
+permissions, and it ignores any filename containing a `.` or ending in `~`, so
+do not name it `deploy.conf`.
 
 `deploy` owns `/opt/cms` and runs the service. On a droplet with one operator
 that is the right number of accounts. If more than one person ever deploys,
@@ -89,7 +111,18 @@ split it: a `cms` system account that runs the unit and cannot write
 at the point where "who pushed that binary" stops having an obvious answer.
 
 Now confirm — **from a second terminal, before closing the first** — that
-`ssh cms` works and `sudo -v` succeeds. Locking yourself out of a droplet is
+`ssh cms` lands as `deploy` and that sudo works without a prompt:
+
+```sh
+ssh cms 'id -un; sudo -n id -un'          # expect: deploy, then root
+```
+
+`sudo -n` is the check that matters, not `sudo -v`: `-n` fails rather than
+prompting, which is exactly the failure an automated deploy would hit. A `sudo`
+that merely *would have* worked if somebody were sitting there to type a
+password is not a working deploy account.
+
+Do this before the next step, not after. Locking yourself out of a droplet is
 recoverable only through the console.
 
 Then close password and root login. In `/etc/ssh/sshd_config`:
