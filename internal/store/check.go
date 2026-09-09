@@ -44,10 +44,25 @@ type CheckReport struct {
 	// not restart it.
 	StuckJobLeases int
 
-	// OrphanedResources is zero until published_resources exists in M9. It is
-	// reported rather than omitted so that the report does not change shape
-	// when it does.
+	// OrphanedResources is how many ways the output tree and
+	// published_resources disagree: rows whose file is gone plus files no row
+	// claims (PLAN.md M9 acceptance 7).
+	//
+	// It is filled in by the caller and not by Check, and that is deliberate.
+	// Check reads the database and nothing else; reconciling two sets of
+	// paths needs the output tree, which is a directory this package has
+	// never heard of and has no business opening. "cmsdb check --output DIR"
+	// runs publish.Reconcile and writes the answer here, and a check run
+	// without --output leaves it at zero and says so.
 	OrphanedResources int
+
+	// MissingFiles are the paths published_resources names that are not in
+	// the output tree, and UnknownFiles are the paths in the tree that no row
+	// claims. They are two lists rather than one count because they are
+	// opposite mistakes: the first is a page the system believes it is
+	// serving and is not, and the second is a page nothing will ever expire.
+	MissingFiles []string
+	UnknownFiles []string
 }
 
 // OK reports whether the check found nothing wrong.

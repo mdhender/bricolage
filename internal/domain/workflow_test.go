@@ -14,17 +14,17 @@ import (
 // must be refused when it is read, not ignored when it runs.
 
 func TestGuardVocabularyIsClosed(t *testing.T) {
-	if len(Guards) != 7 {
-		t.Fatalf("there are %d guards, and DESIGN.md 6.1 declares seven: %v", len(Guards), Guards)
+	if len(Guards) != 8 {
+		t.Fatalf("there are %d guards, and DESIGN.md 6.1 declares eight: %v", len(Guards), Guards)
 	}
 	want := map[Guard]bool{
 		GuardNoteRequired: true, GuardAssigneeOnly: true, GuardApprovalsMet: true,
 		GuardNotLocked: true, GuardCommentsResolved: true, GuardHasSlug: true,
-		GuardHasCoverDate: true,
+		GuardHasCoverDate: true, GuardHasCheckedInVersion: true,
 	}
 	for _, g := range Guards {
 		if !want[g] {
-			t.Errorf("%q is in Guards and is not one of the seven", g)
+			t.Errorf("%q is in Guards and is not one of the eight", g)
 		}
 		if !g.Valid() {
 			t.Errorf("%q is in Guards and reports itself invalid", g)
@@ -32,7 +32,7 @@ func TestGuardVocabularyIsClosed(t *testing.T) {
 		delete(want, g)
 	}
 	for g := range want {
-		t.Errorf("%q is one of the seven and is not in Guards", g)
+		t.Errorf("%q is one of the eight and is not in Guards", g)
 	}
 	for _, not := range []Guard{"", "pre_chk_rules", "note-required", "NOTE_REQUIRED"} {
 		if not.Valid() {
@@ -42,8 +42,8 @@ func TestGuardVocabularyIsClosed(t *testing.T) {
 }
 
 func TestEffectVocabularyIsClosed(t *testing.T) {
-	if len(Effects) != 4 {
-		t.Fatalf("there are %d effects, and DESIGN.md 6.1 declares four: %v", len(Effects), Effects)
+	if len(Effects) != 5 {
+		t.Fatalf("there are %d effects, and DESIGN.md 6.1 declares five: %v", len(Effects), Effects)
 	}
 	for _, e := range Effects {
 		if !e.Valid() {
@@ -53,7 +53,7 @@ func TestEffectVocabularyIsClosed(t *testing.T) {
 	if !EffectSetDueIn.Parameterised() {
 		t.Error("set_due_in takes a duration and reports that it does not")
 	}
-	for _, e := range []Effect{EffectClearAssignee, EffectAssignToActor, EffectClearApprovals} {
+	for _, e := range []Effect{EffectClearAssignee, EffectAssignToActor, EffectClearApprovals, EffectPublish} {
 		if e.Parameterised() {
 			t.Errorf("%q reports that it takes a parameter; it is named by its presence", e)
 		}

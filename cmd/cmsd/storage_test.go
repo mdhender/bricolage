@@ -127,7 +127,10 @@ func TestCmsdb(t *testing.T) {
 			"application_id",
 			"user_version",
 			"stuck job leases: 0",
-			"orphaned resources: 0",
+			// Without --output the output tree is not walked, and the check
+			// says the question was not asked rather than answering it with a
+			// zero it did not earn (PLAN.md M9 acceptance 7).
+			"orphaned resources: not checked",
 			"ok",
 		} {
 			if !strings.Contains(stdout, want) {

@@ -146,6 +146,31 @@ const (
 	// that the reason survives the columns the retry clears.
 	JobRetried = "job.retried"
 
+	// The publishing events (PLAN.md M9). Between them they answer the
+	// question a publishing system exists to be asked: what is at this
+	// address, which version put it there, and when did the one before it go
+	// away.
+
+	// DocumentPublishScheduled is written when somebody asks for a publish.
+	// The payload carries the version it pinned and the instant it is
+	// scheduled for, which is the whole of invariant 8 written down at the
+	// moment the promise is made: an editor reading this line a week later
+	// can see that version 5 was scheduled, whatever the document has become.
+	DocumentPublishScheduled = "document.publish_scheduled"
+
+	// DocumentPublished is written when a publish job succeeds. The payload
+	// names the version, the channels, and every address written; it does not
+	// carry the bytes, for the reason a draft update names fields and not
+	// contents.
+	DocumentPublished = "document.published"
+
+	// ResourceExpired is written when a file the publisher no longer produces
+	// is deleted. Its subject is the document rather than the resource,
+	// because the resource row was deleted by the publish that stopped
+	// producing the address and an audit trail whose subject can vanish is an
+	// audit trail with holes in it.
+	ResourceExpired = "resource.expired"
+
 	// The structure events (PLAN.md M7). Categories, output channels and
 	// element types are configuration rather than content, and every one of
 	// these is a state change that a document's address or validity depends
@@ -217,6 +242,10 @@ var names = map[string]string{
 	JobAbandoned: "Job abandoned",
 	JobRetried:   "Job retried",
 
+	DocumentPublishScheduled: "Publish scheduled",
+	DocumentPublished:        "Published",
+	ResourceExpired:          "Resource expired",
+
 	CategoryCreated:      "Category created",
 	CategoryMoved:        "Category moved",
 	CategoryDeleted:      "Category deleted",
@@ -251,6 +280,9 @@ func All() []string {
 		JobFailed,
 		JobAbandoned,
 		JobRetried,
+		DocumentPublishScheduled,
+		DocumentPublished,
+		ResourceExpired,
 		CategoryCreated,
 		CategoryMoved,
 		CategoryDeleted,

@@ -283,6 +283,16 @@ type TransitionFacts struct {
 
 	// UnresolvedComments is how many open comments the document carries.
 	UnresolvedComments int
+
+	// CheckedIn is the newest version that has been checked in, which is what
+	// a publish pins (invariant 8, PLAN.md M9). It is separate from Version
+	// because the two differ exactly when it matters: while somebody holds the
+	// document checked out, the current version is the open working draft, and
+	// EffectPublish must never pin that.
+	//
+	// It is the zero value for a document whose only version is its first
+	// draft, and EffectPublish refuses rather than publishing nothing.
+	CheckedIn domain.Version
 }
 
 // TransitionOutcome is what the engine decided: the new state, the effects to
@@ -307,6 +317,14 @@ type TransitionOutcome struct {
 	// ClearApprovals is EffectClearApprovals: discard the approvals recorded
 	// against the current version.
 	ClearApprovals bool
+
+	// Jobs are enqueued in the same transaction as the move, which is
+	// DESIGN.md 6.4's fourth step. EffectPublish is what fills it today.
+	//
+	// The uid is minted by the engine rather than here, because a uid is a
+	// ULID over an instant and this package has no clock (invariant 3). An
+	// empty slice is the ordinary case and costs nothing.
+	Jobs []NewJob
 
 	// Event is recorded in the same transaction as the move (invariant 7). Its
 	// subject is filled in here.
@@ -343,9 +361,11 @@ type TransitionRequest struct {
 // read-then-write would let both reads see "draft" and both writes succeed,
 // with the second silently overwriting the first's move.
 //
-// Enqueuing jobs is the fourth step DESIGN.md 6.4 names, and it arrives with
-// the queue in M6. There is deliberately no empty hook for it here: a
-// parameter nothing fills is the rule column nothing reads (invariant 6).
+// Enqueuing jobs is the fourth step DESIGN.md 6.4 names, and M9 is the
+// milestone that fills it: a transition declaring EffectPublish hands over a
+// publish job in its outcome, and it is written here, inside the same
+// transaction. Until something filled it there was deliberately no hook, for
+// the reason invariant 6 gives.
 func (db *DB) ApplyTransition(ctx context.Context, req TransitionRequest) (domain.Document, error) {
 	var out domain.Document
 	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
@@ -363,6 +383,9 @@ func (db *DB) ApplyTransition(ctx context.Context, req TransitionRequest) (domai
 			return err
 		}
 		if facts.UnresolvedComments, err = unresolvedComments(conn, req.DocumentID); err != nil {
+			return err
+		}
+		if err := loadCheckedIn(conn, req.DocumentID, &facts.CheckedIn); err != nil {
 			return err
 		}
 
@@ -395,6 +418,16 @@ func (db *DB) ApplyTransition(ctx context.Context, req TransitionRequest) (domai
 		outcome.Event.SubjectID = req.DocumentID
 		if _, err := recordEvent(conn, outcome.Event); err != nil {
 			return err
+		}
+
+		// Step four of DESIGN.md 6.4, in the same transaction as the other
+		// three. A move whose publish job was written by a second transaction
+		// could commit the move and lose the publish, which is a document
+		// that says "published" and a site that does not have it.
+		for _, job := range outcome.Jobs {
+			if _, err := enqueueJob(conn, job); err != nil {
+				return err
+			}
 		}
 		return documentByID(conn, req.DocumentID, &out)
 	})
@@ -521,10 +554,28 @@ func (db *DB) TransitionFactsFor(ctx context.Context, doc domain.Document) (Tran
 		if facts.ApprovalsByState, err = approvalsByState(conn, doc.CurrentVersionID); err != nil {
 			return err
 		}
-		facts.UnresolvedComments, err = unresolvedComments(conn, doc.ID)
-		return err
+		if facts.UnresolvedComments, err = unresolvedComments(conn, doc.ID); err != nil {
+			return err
+		}
+		return loadCheckedIn(conn, doc.ID, &facts.CheckedIn)
 	})
 	return facts, err
+}
+
+// loadCheckedIn fills in the newest checked-in version, treating "there is
+// none" as the zero value rather than as an error.
+//
+// A document whose only version is its first draft has never been checked in,
+// which is an ordinary state and not a failure: every guard must cope with it,
+// and EffectPublish is the one thing that refuses it, with a message about
+// publishing rather than about a missing row.
+func loadCheckedIn(conn *sqlite.Conn, documentID int64, v *domain.Version) error {
+	err := latestCheckedIn(conn, documentID, v)
+	if isNotFound(err) {
+		*v = domain.Version{}
+		return nil
+	}
+	return err
 }
 
 // NewApproval is what CreateApproval is given.

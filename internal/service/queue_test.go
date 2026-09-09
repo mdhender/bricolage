@@ -428,6 +428,14 @@ func TestAssignmentEffectsFireOnTransitions(t *testing.T) {
 	if _, err := h.Transition(t.Context(), h.editor, doc.UID, "approved", ""); err != nil {
 		t.Fatalf("Transition to approved: %v", err)
 	}
+	// Publish declares has_checked_in_version: the publish job it schedules
+	// pins a checked-in version and this document has none yet (PLAN.md M9).
+	if _, err := h.Checkout(t.Context(), h.editor, doc.UID); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	if _, err := h.Checkin(t.Context(), h.editor, doc.UID, "ready"); err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
 	if _, err := h.Transition(t.Context(), h.editor, doc.UID, "published", ""); err != nil {
 		t.Fatalf("Transition to published: %v", err)
 	}

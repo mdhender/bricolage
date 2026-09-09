@@ -64,40 +64,62 @@ func (db *DB) EnqueueJob(ctx context.Context, n NewJob) (domain.Job, error) {
 
 	var out domain.Job
 	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
-		err := run(conn, "enqueuing a "+n.Job.Kind+" job", `
-			INSERT INTO jobs (uid, kind, priority, scheduled_for, payload,
-			                  attempts, max_attempts, created_by, created_at)
-			VALUES (:uid, :kind, :priority, :scheduled_for, :payload,
-			        0, :max_attempts, :created_by, :created_at)`,
-			func(stmt *sqlite.Stmt) {
-				stmt.SetText(":uid", n.UID)
-				stmt.SetText(":kind", n.Job.Kind)
-				stmt.SetInt64(":priority", int64(n.Job.Priority))
-				stmt.SetText(":scheduled_for", formatTime(n.Job.ScheduledFor))
-				stmt.SetText(":payload", n.Job.Payload)
-				stmt.SetInt64(":max_attempts", int64(n.Job.MaxAttempts))
-				if n.Job.CreatedBy == 0 {
-					// NULL is the system, which is why the column is nullable
-					// rather than pointing at a sentinel row.
-					stmt.SetNull(":created_by")
-				} else {
-					stmt.SetInt64(":created_by", n.Job.CreatedBy)
-				}
-				stmt.SetText(":created_at", formatTime(n.Event.OccurredAt))
-			}, nil)
-		if err != nil {
-			return err
-		}
-		id := conn.LastInsertRowID()
-
-		n.Event.SubjectKind = domain.SubjectJob
-		n.Event.SubjectID = id
-		if _, err := recordEvent(conn, n.Event); err != nil {
-			return err
-		}
-		return jobByID(conn, id, &out)
+		var err error
+		out, err = enqueueJob(conn, n)
+		return err
 	})
 	return out, err
+}
+
+// enqueueJob writes a job and its event on a connection the caller holds,
+// inside the caller's transaction.
+//
+// It exists because enqueuing is not always its own transaction. DESIGN.md 6.4
+// makes "enqueue any jobs" the fourth step of a transition, after the state,
+// the effects, and the event, and all four are one change: a transition into
+// "published" whose publish job was written by a second transaction could
+// commit the move and lose the publish.
+func enqueueJob(conn *sqlite.Conn, n NewJob) (domain.Job, error) {
+	if err := n.Job.Validate(); err != nil {
+		return domain.Job{}, err
+	}
+	if n.UID == "" {
+		return domain.Job{}, fmt.Errorf("job %s: no uid: %w", n.Job.Kind, domain.ErrInvalid)
+	}
+
+	err := run(conn, "enqueuing a "+n.Job.Kind+" job", `
+		INSERT INTO jobs (uid, kind, priority, scheduled_for, payload,
+		                  attempts, max_attempts, created_by, created_at)
+		VALUES (:uid, :kind, :priority, :scheduled_for, :payload,
+		        0, :max_attempts, :created_by, :created_at)`,
+		func(stmt *sqlite.Stmt) {
+			stmt.SetText(":uid", n.UID)
+			stmt.SetText(":kind", n.Job.Kind)
+			stmt.SetInt64(":priority", int64(n.Job.Priority))
+			stmt.SetText(":scheduled_for", formatTime(n.Job.ScheduledFor))
+			stmt.SetText(":payload", n.Job.Payload)
+			stmt.SetInt64(":max_attempts", int64(n.Job.MaxAttempts))
+			if n.Job.CreatedBy == 0 {
+				// NULL is the system, which is why the column is nullable
+				// rather than pointing at a sentinel row.
+				stmt.SetNull(":created_by")
+			} else {
+				stmt.SetInt64(":created_by", n.Job.CreatedBy)
+			}
+			stmt.SetText(":created_at", formatTime(n.Event.OccurredAt))
+		}, nil)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	id := conn.LastInsertRowID()
+
+	n.Event.SubjectKind = domain.SubjectJob
+	n.Event.SubjectID = id
+	if _, err := recordEvent(conn, n.Event); err != nil {
+		return domain.Job{}, err
+	}
+	var out domain.Job
+	return out, jobByID(conn, id, &out)
 }
 
 // claimSQL is the compare-and-swap, DESIGN.md 9's statement with its ORDER BY

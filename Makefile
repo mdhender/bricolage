@@ -54,15 +54,31 @@ fmt:
 ## lint: the greps that catch the rules nobody notices breaking.
 lint: no-mkdir no-dev-routes one-state-writer
 
-## no-mkdir: nothing in this system creates a directory (invariant 19).
+## no-mkdir: nothing creates a directory it was told to use (invariant 19).
 ##
-## --db names a directory that must already exist. A tool that creates what it
-## cannot find turns a typo into a plausible-looking, empty system, and the
-## mistake surfaces hours later as "where did everything go".
+## --db, --templates, --preview, and --output all name directories that must
+## already exist. A tool that creates what it cannot find turns a typo into a
+## plausible-looking, empty system, and the mistake surfaces hours later as
+## "where did everything go".
+##
+## The one exception is the interior of the output tree, in
+## internal/publish/tree.go: "/features/film/2026/03/01/" is computed from a
+## category path and a URI format rather than typed by anybody, and an output
+## tree that is not a tree is a publishing system no web server can serve. The
+## grep catches an os.Root method as well as a package function, because
+## reaching for root.MkdirAll to slip past a grep for os.MkdirAll is exactly
+## the "convenience wrapper" invariant 19 names.
 no-mkdir:
-	@if grep -rn 'os\.MkdirAll\|os\.Mkdir(' ./cmd ./internal; then \
+	@if grep -rnE 'os\.MkdirAll|os\.Mkdir\(|\.MkdirAll\(|\.Mkdir\(' ./cmd ./internal --include='*.go' \
+		| grep -v '^\./internal/publish/tree\.go:'; then \
 		echo "lint: nothing may create a directory (invariant 19, DESIGN.md 13.1)"; exit 1; \
 	fi
+	@callers=$$(grep -rl 'MkdirAll\|Mkdir(' ./cmd ./internal --include='*.go' | grep -v '_test\.go$$'); \
+	if [ "$$callers" != "./internal/publish/tree.go" ]; then \
+		echo "lint: the output tree is the one directory this system creates (invariant 19); found:"; \
+		echo "$$callers"; exit 1; \
+	fi
+	$(GO) test -run 'TestNewTreeNeverCreatesItsRoot|TestNothingCreatesADirectory' ./internal/publish/ ./internal/store/
 
 ## no-dev-routes: the /__development/* routes are registered only when the
 ## resolved environment is exactly "development" (invariant 16).

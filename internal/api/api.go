@@ -65,10 +65,11 @@ func New(deps Deps) *Handler {
 // M2 registered the session and identity routes and the grant-writing route
 // that carries the anti-escalation check; M3 added the document, version,
 // diff, and history routes, M4 the transitions, M5 assignment, due dates, and
-// the queues, M6 the job queue, and M7 sites, categories, output channels,
-// element types, and the URIs they produce. The publishing routes arrive with
-// the milestones that implement them; a route registered before its service
-// method exists is a 501 nobody asked for.
+// the queues, M6 the job queue, M7 sites, categories, output channels,
+// element types, and the URIs they produce, M8 the preview, and M9 the
+// publications and the resources they leave behind. The routes that are still
+// missing arrive with the milestones that implement them; a route registered
+// before its service method exists is a 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
 	h := New(deps)
 
@@ -190,6 +191,19 @@ func Register(mux Mux, deps Deps) {
 	// internal/server, through RegisterPreview: it is not under Prefix, and a
 	// route table that called it "json api" would be describing it wrongly.
 	handle("POST "+Prefix+"documents/{uid}/preview", h.authenticated(h.previewDocument))
+
+	// Publishing (PLAN.md M9). POST schedules a publish and answers 202: what
+	// it created is a job, and the page it names does not exist yet. GET
+	// .../resources says what is at the document's addresses now, which is
+	// the visible face of published_resources and the only way to see that a
+	// slug change took the old file with it.
+	//
+	// A publish is scheduled and never performed inline, even when it is
+	// wanted now. "Publish at midnight" and "publish now" are the same request
+	// with a different instant in it, and that is only true if the request
+	// never does the work itself (DESIGN.md 8.1).
+	handle("POST "+Prefix+"documents/{uid}/publications", h.authenticated(h.publishDocument))
+	handle("GET "+Prefix+"documents/{uid}/resources", h.authenticated(h.documentResources))
 
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 	handle("POST "+Prefix+"element-types", h.authenticated(h.createElementType))

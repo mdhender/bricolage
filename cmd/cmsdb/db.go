@@ -9,6 +9,7 @@ import (
 
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/migrate"
+	"github.com/mdhender/bricolage/internal/publish"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -135,7 +136,7 @@ func newMigrateUpCmd() *cobra.Command {
 }
 
 func newCheckCmd() *cobra.Command {
-	var dir string
+	var dir, output string
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Check integrity, foreign keys, leases, and orphaned resources",
@@ -156,6 +157,31 @@ func newCheckCmd() *cobra.Command {
 				return err
 			}
 
+			// The half of the check that is not in the database
+			// (PLAN.md M9 acceptance 7). It needs the output tree, so it is
+			// done here rather than inside store.Check, which reads rows and
+			// opens no directories. Without --output the two lists stay empty
+			// and the report says the question was not asked, because
+			// "0 orphaned resources" from a check that never looked is the
+			// most misleading line a report could carry.
+			var reconciled bool
+			if output != "" {
+				tree, err := publish.NewTree(output)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = tree.Close() }()
+
+				diff, err := publish.Reconcile(cmd.Context(), db, tree)
+				if err != nil {
+					return err
+				}
+				report.MissingFiles = diff.Missing
+				report.UnknownFiles = diff.Unknown
+				report.OrphanedResources = diff.Count()
+				reconciled = true
+			}
+
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "database: %s\n", report.Path)
 			fmt.Fprintf(out, "application_id: %s\n", migrate.AppIDString(report.AppID))
@@ -171,19 +197,31 @@ func newCheckCmd() *cobra.Command {
 			// what a worker that died looks like from the outside, and the
 			// queue recovers on its own when the lease expires.
 			fmt.Fprintf(out, "stuck job leases: %d\n", report.StuckJobLeases)
-			fmt.Fprintf(out, "orphaned resources: %d\n", report.OrphanedResources)
+			if !reconciled {
+				fmt.Fprintln(out, "orphaned resources: not checked (give --output DIR)")
+			} else {
+				fmt.Fprintf(out, "orphaned resources: %d\n", report.OrphanedResources)
+				for _, p := range report.MissingFiles {
+					fmt.Fprintf(out, "missing file: %s (a resource row names it and it is not there)\n", p)
+				}
+				for _, p := range report.UnknownFiles {
+					fmt.Fprintf(out, "unknown file: %s (nothing claims it, so nothing will expire it)\n", p)
+				}
+			}
 
 			if !report.OK() {
 				// A check that finds damage and exits 0 is a check nobody can
 				// put in a cron job.
-				return fmt.Errorf("check found %d foreign key violations and %d integrity problems",
-					len(report.ForeignKeyViolations), len(report.IntegrityProblems))
+				return fmt.Errorf("check found %d foreign key violations, %d integrity problems, and %d orphaned resources",
+					len(report.ForeignKeyViolations), len(report.IntegrityProblems), report.OrphanedResources)
 			}
 			fmt.Fprintln(out, "ok")
 			return nil
 		},
 	}
 	addDBFlag(cmd, &dir)
+	cmd.Flags().StringVar(&output, "output", "",
+		"directory published files were written beneath; without it the output tree is not checked")
 	return cmd
 }
 

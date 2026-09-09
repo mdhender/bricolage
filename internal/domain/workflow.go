@@ -75,9 +75,26 @@ const (
 
 	// GuardHasCoverDate refuses a current version with no cover date.
 	GuardHasCoverDate Guard = "has_cover_date"
+
+	// GuardHasCheckedInVersion refuses a document that has never been checked
+	// in (PLAN.md M9).
+	//
+	// It is the eighth guard and it arrived with EffectPublish, because the
+	// two together are what keeps invariant 5 true. A publish pins a
+	// checked-in version (invariant 8) and a document whose only version is
+	// its first draft has none, so without this the engine would have to
+	// refuse while applying the effect -- after check had already said yes,
+	// which is exactly the disagreement between the menu and the action that
+	// invariant 5 exists to make unrepresentable.
+	//
+	// It reads the newest checked-in version rather than the current one. The
+	// two differ while somebody holds the document checked out, and that case
+	// is not a refusal: a document with three checked-in versions and an open
+	// draft has something to publish.
+	GuardHasCheckedInVersion Guard = "has_checked_in_version"
 )
 
-// Guards are the seven, in the order the admin screens list them.
+// Guards are the eight, in the order the admin screens list them.
 var Guards = []Guard{
 	GuardNoteRequired,
 	GuardAssigneeOnly,
@@ -86,9 +103,10 @@ var Guards = []Guard{
 	GuardCommentsResolved,
 	GuardHasSlug,
 	GuardHasCoverDate,
+	GuardHasCheckedInVersion,
 }
 
-// Valid reports whether g is one of the seven.
+// Valid reports whether g is one of the eight.
 func (g Guard) Valid() bool { return slices.Contains(Guards, g) }
 
 func (g Guard) String() string { return string(g) }
@@ -113,17 +131,36 @@ const (
 	// EffectSetDueIn sets the due date to a duration from now. It is the one
 	// parameterised effect: its value is a Go duration string, "48h".
 	EffectSetDueIn Effect = "set_due_in"
+
+	// EffectPublish schedules a publish of the document's current checked-in
+	// version, in the same transaction as the move (DESIGN.md 6.4, step four,
+	// and PLAN.md M9, "Transition effect: publishing from a publishable
+	// state").
+	//
+	// It is the fifth effect and the one that reaches outside the document
+	// row. The job it enqueues pins a version id and never a document id
+	// (invariant 8), so a transition into "published" publishes what was
+	// approved rather than whatever the draft has become by the time a worker
+	// picks the job up.
+	//
+	// A transition declaring it must enter a state whose Publishable is set;
+	// Workflow.Validate refuses one that does not. Publishing out of a state
+	// the process does not call publishable is a workflow that contradicts
+	// itself, and the contradiction is worth refusing when the row is read
+	// rather than discovering at the scheduled hour.
+	EffectPublish Effect = "publish"
 )
 
-// Effects are the four, in the order the admin screens list them.
+// Effects are the five, in the order the admin screens list them.
 var Effects = []Effect{
 	EffectClearAssignee,
 	EffectAssignToActor,
 	EffectClearApprovals,
 	EffectSetDueIn,
+	EffectPublish,
 }
 
-// Valid reports whether e is one of the four.
+// Valid reports whether e is one of the five.
 func (e Effect) Valid() bool { return slices.Contains(Effects, e) }
 
 func (e Effect) String() string { return string(e) }
@@ -385,9 +422,33 @@ func (w Workflow) Validate() error {
 			return fmt.Errorf("workflow %q: transition %s leaves %q, which is not one of its states: %w",
 				w.Name, t.Name, t.From, ErrInvalid)
 		}
-		if _, ok := w.State(t.To); !ok {
+		to, ok := w.State(t.To)
+		if !ok {
 			return fmt.Errorf("workflow %q: transition %s enters %q, which is not one of its states: %w",
 				w.Name, t.Name, t.To, ErrInvalid)
+		}
+		// The one cross-check between a transition and a state, and the
+		// reason Validate needs the whole workflow rather than the transition
+		// alone. A transition that publishes into a state the process does
+		// not call publishable is a process contradicting itself, and the
+		// contradiction is refused when the row is read rather than found out
+		// at the scheduled hour (PLAN.md M9).
+		if t.HasEffect(EffectPublish) {
+			if !to.Publishable {
+				return fmt.Errorf("workflow %q: transition %s declares %s and enters %q, which is not a publishable state: %w",
+					w.Name, t.Name, EffectPublish, t.To, ErrInvalid)
+			}
+			// The pairing that keeps invariant 5 true. A publish pins a
+			// checked-in version and a document that has never been checked
+			// in has none, so a transition that could publish must be able to
+			// refuse before check says yes -- which means declaring the guard
+			// that asks. Without this rule the engine would have to refuse
+			// while applying the effect, and Available would offer a move Do
+			// rejects.
+			if !slices.Contains(t.Guards, GuardHasCheckedInVersion) {
+				return fmt.Errorf("workflow %q: transition %s declares %s and must also declare the %s guard, or it would offer a move the engine refuses: %w",
+					w.Name, t.Name, EffectPublish, GuardHasCheckedInVersion, ErrInvalid)
+			}
 		}
 	}
 	return nil

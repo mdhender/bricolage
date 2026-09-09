@@ -10,6 +10,7 @@ import (
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/jobs"
+	"github.com/mdhender/bricolage/internal/publish"
 	"github.com/mdhender/bricolage/internal/render"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/mdhender/bricolage/internal/workflow"
@@ -65,6 +66,14 @@ type Service struct {
 	// start the server.
 	renderer *render.Engine
 	preview  *render.Scratch
+
+	// publisher renders to the output tree and remembers what it wrote
+	// (PLAN.md M9). It is nil on a server started without --output or
+	// without --templates, which is a supported configuration: M0 through M8
+	// is a working editorial system that renders previews and publishes
+	// nothing, and a request to publish on such a server is a 503 naming the
+	// flag it was not given.
+	publisher *publish.Publisher
 }
 
 // Options configure a Service. Everything is resolved before New is called;
@@ -106,6 +115,11 @@ type Options struct {
 	// starting rather than on the first preview.
 	Renderer *render.Engine
 	Preview  *render.Scratch
+
+	// Publisher writes to the output tree, or nil for a server that
+	// publishes nothing. It is built by main, over a directory that must
+	// already exist, for the reason the other two are.
+	Publisher *publish.Publisher
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -130,6 +144,7 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		queues:     opts.Queues,
 		renderer:   opts.Renderer,
 		preview:    opts.Preview,
+		publisher:  opts.Publisher,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)

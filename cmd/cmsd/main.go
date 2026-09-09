@@ -27,6 +27,7 @@ import (
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/jobs"
 	"github.com/mdhender/bricolage/internal/migrate"
+	"github.com/mdhender/bricolage/internal/publish"
 	"github.com/mdhender/bricolage/internal/render"
 	"github.com/mdhender/bricolage/internal/server"
 	"github.com/mdhender/bricolage/internal/service"
@@ -91,6 +92,18 @@ type flags struct {
 	// and answers 503 to a preview, naming the flag it was not given.
 	templates string
 	preview   string
+
+	// output is the tree published files are written beneath (PLAN.md M9).
+	// It is optional and it is never created: the root must already exist,
+	// which is invariant 19's half of this that does not bend, so a mistyped
+	// --output is a refusal at startup rather than a site published into a
+	// directory nobody can find.
+	//
+	// What is created is the interior -- /features/film/2026/03/01/ -- which
+	// is computed from a category path and a URI format rather than typed by
+	// anybody. internal/publish/tree.go says why the exception stops exactly
+	// there.
+	output string
 }
 
 func newRootCmd() *cobra.Command {
@@ -167,14 +180,40 @@ func newServeCmd(f *flags) *cobra.Command {
 				)
 			}
 
+			// The output tree, opened for the same reason and with the same
+			// rule: it must already exist, and a --output that does not name
+			// a directory is a refusal here rather than at the scheduled
+			// hour.
+			tree, err := settings.output(f)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = tree.Close() }()
+
 			// The one place outside internal/clock that reads the wall clock
 			// is main, and this is it: the real clock is constructed here and
 			// handed down (invariant 3).
+			// The publisher, which needs a template tree to render with and
+			// an output tree to write to. Without either this server
+			// publishes nothing and says so, naming the flag: an editorial
+			// system that renders previews and publishes nowhere is a
+			// supported configuration (DESIGN.md 8.4).
+			publisher, err := settings.publisher(db, renderer, tree)
+			if err != nil {
+				return err
+			}
+			if publisher == nil {
+				settings.log.Info("publishing disabled; --output and --templates are both needed")
+			} else {
+				settings.log.Info("publishing", "output", tree.Dir())
+			}
+
 			svc, err := service.New(db, service.Options{
-				Clock:    clock.Real{},
-				Logger:   settings.log,
-				Renderer: renderer,
-				Preview:  previews,
+				Clock:     clock.Real{},
+				Logger:    settings.log,
+				Renderer:  renderer,
+				Preview:   previews,
+				Publisher: publisher,
 			})
 			if err != nil {
 				return err
@@ -186,9 +225,19 @@ func newServeCmd(f *flags) *cobra.Command {
 			// (invariant 17). --workers 0 hands it nothing and none run.
 			var background server.Background
 			if f.workers > 0 {
+				// The registry is built here and the publish and expire kinds
+				// are registered into it by the package that owns them. A
+				// registry that knew how to build a publisher would be a
+				// registry that imported half the system, and a kind
+				// registered without its handler would be a name that lies
+				// about what the queue can run (invariant 6).
+				registry := jobs.NewRegistry()
+				if publisher != nil {
+					publisher.Register(registry)
+				}
 				pool, err := jobs.NewPool(jobs.PoolOptions{
 					Queue:    svc.JobQueue(),
-					Registry: jobs.NewRegistry(),
+					Registry: registry,
 					Workers:  f.workers,
 					Logger:   settings.log,
 				})
@@ -225,6 +274,8 @@ func newServeCmd(f *flags) *cobra.Command {
 		"directory holding the template tree; it must already exist, and without it this server renders nothing")
 	cmd.Flags().StringVar(&f.preview, "preview", "",
 		"directory previews are written to; it must already exist, and without it this server serves none")
+	cmd.Flags().StringVar(&f.output, "output", "",
+		"directory published files are written beneath; it must already exist, and without it this server publishes nothing")
 	return cmd
 }
 
@@ -366,6 +417,39 @@ func (s *settings) rendering(f *flags) (*render.Engine, *render.Scratch, error) 
 		}
 	}
 	return engine, scratch, nil
+}
+
+// output opens the output tree, or returns nil when --output was not given.
+//
+// The nil is a supported configuration and not a mistake: M0 through M8 is a
+// working editorial system that renders previews and publishes nothing, and a
+// request to publish on such a server is a 503 naming the flag.
+func (s *settings) output(f *flags) (*publish.Tree, error) {
+	if f.output == "" {
+		return nil, nil
+	}
+	return publish.NewTree(f.output)
+}
+
+// publisher builds the publisher, or returns nil when this server cannot
+// publish.
+//
+// It needs both trees. A template tree with no output tree renders previews
+// and has nowhere to put a published page; an output tree with no template
+// tree has somewhere to put bytes nothing can produce. Either half alone is a
+// configuration that cannot publish, and saying so once at startup is better
+// than a 503 per attempt with no explanation of which half is missing.
+func (s *settings) publisher(db *store.DB, renderer *render.Engine, tree *publish.Tree) (*publish.Publisher, error) {
+	if renderer == nil || tree == nil {
+		return nil, nil
+	}
+	return publish.New(publish.Options{
+		DB:       db,
+		Renderer: renderer,
+		Tree:     tree,
+		Clock:    clock.Real{},
+		Logger:   s.log,
+	})
 }
 
 // server builds the Server. A nil service is the "cmsd routes" case: the table

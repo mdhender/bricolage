@@ -150,9 +150,19 @@ var dueFormats = []string{
 // (invariant 3), and because a relative deadline nobody can evaluate at an
 // arbitrary instant is a deadline nobody tests.
 func ParseDue(s string, now time.Time) (time.Time, error) {
+	return ParseInstant("due date", s, now)
+}
+
+// ParseInstant is the shared reader behind ParseDue and ParseSchedule.
+//
+// The two are the same grammar asked for two reasons -- when is this wanted,
+// and when should this happen -- and what differs is the noun in the message.
+// One parser means "48h" means the same thing on both, which is the sort of
+// consistency a person notices only when it is missing.
+func ParseInstant(what, s string, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return time.Time{}, fmt.Errorf("due date: empty: %w", ErrInvalid)
+		return time.Time{}, fmt.Errorf("%s: empty: %w", what, ErrInvalid)
 	}
 
 	// A leading sign or digit followed by a unit is a duration. time.ParseDuration
@@ -161,7 +171,7 @@ func ParseDue(s string, now time.Time) (time.Time, error) {
 	// suffix, and "2026-03-01" fails ParseDuration on the "-" between digits.
 	if d, err := time.ParseDuration(s); err == nil {
 		if d < 0 {
-			return time.Time{}, fmt.Errorf("due in %s: a deadline in the past: %w", s, ErrInvalid)
+			return time.Time{}, fmt.Errorf("%s in %s: an instant in the past: %w", what, s, ErrInvalid)
 		}
 		return now.Add(d).UTC(), nil
 	}
@@ -172,8 +182,8 @@ func ParseDue(s string, now time.Time) (time.Time, error) {
 		}
 	}
 	return time.Time{}, fmt.Errorf(
-		"due date %q: want a date (2026-03-01), a timestamp (2026-03-01T17:00:00Z), or a duration (48h): %w",
-		s, ErrInvalid)
+		"%s %q: want a date (2026-03-01), a timestamp (2026-03-01T17:00:00Z), or a duration (48h): %w",
+		what, s, ErrInvalid)
 }
 
 // IsOverdue reports whether a document's due date has passed as of now.

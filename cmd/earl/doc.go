@@ -77,6 +77,8 @@ func newDocCmd() *cobra.Command {
 		newDocCategoriesCmd(),
 		newDocURIsCmd(),
 		newDocPreviewCmd(),
+		newDocPublishCmd(),
+		newDocResourcesCmd(),
 	)
 	return cmd
 }
@@ -1014,3 +1016,137 @@ func newDocPreviewCmd() *cobra.Command {
 // code say so as well. An agent driving this reads exit codes, and "invalid"
 // on stdout with a zero exit is a report nobody acts on.
 var errTemplateInvalid = errors.New("the template does not compile")
+
+// publicationResponse is a scheduled publish as the API speaks it.
+type publicationResponse struct {
+	UID          string    `json:"uid"`
+	Version      int       `json:"version"`
+	Job          string    `json:"job"`
+	ScheduledFor time.Time `json:"scheduled_for"`
+	Channels     []struct {
+		UID  string `json:"uid"`
+		Name string `json:"name"`
+	} `json:"channels"`
+}
+
+// newDocPublishCmd is "earl doc publish" (PLAN.md M9).
+//
+// It prints the version it pinned, because that is the whole promise being
+// made: an editor who schedules a publish for midnight and keeps working needs
+// to see that it is version 5 that will appear, whatever the draft becomes
+// (invariant 8). A command that printed only "scheduled" would leave the one
+// fact worth knowing invisible.
+//
+// --at takes what a person types: a date, a timestamp, or a duration. "--at
+// 2h" and "--at 2026-03-01T00:00:00Z" are the same grammar the due date takes,
+// which is the sort of consistency somebody notices only when it is missing.
+func newDocPublishCmd() *cobra.Command {
+	var (
+		server   string
+		asJSON   bool
+		at       string
+		channels []string
+	)
+	cmd := &cobra.Command{
+		Use:   "publish UID",
+		Short: "Schedule a publish of a document's newest checked-in version",
+		Long: "Schedule a publish of a document's newest checked-in version.\n\n" +
+			"The version is pinned now, when the request is made, and never resolved\n" +
+			"at the scheduled hour: version 5 approved for midnight is what appears\n" +
+			"at midnight, whatever the draft has become. Without --channel the\n" +
+			"document is published to every output channel of its site.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+
+			body := map[string]any{}
+			if at != "" {
+				body["at"] = at
+			}
+			if len(channels) > 0 {
+				body["channels"] = channels
+			}
+			var out publicationResponse
+			if err := client.Do(cmd.Context(), http.MethodPost, docPath(args[0])+"/publications", body, &out); err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(w, out)
+			}
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "DOCUMENT\tVERSION\tJOB\tSCHEDULED FOR")
+			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n",
+				out.UID, out.Version, out.Job, out.ScheduledFor.UTC().Format(time.RFC3339))
+			return tw.Flush()
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	cmd.Flags().StringVar(&at, "at", "",
+		"when to publish: a date, a timestamp, or a duration from now; the default is now")
+	cmd.Flags().StringSliceVar(&channels, "channel", nil,
+		"an output channel's uid; repeatable, and the default is every channel of the site")
+	return cmd
+}
+
+// resourcesResponse is what the publisher has written for a document.
+type resourcesResponse struct {
+	UID       string `json:"uid"`
+	Live      int64  `json:"live_version_id"`
+	Resources []struct {
+		Channel     string    `json:"channel_name"`
+		URI         string    `json:"uri"`
+		Path        string    `json:"path"`
+		Version     int64     `json:"version_id"`
+		Checksum    string    `json:"checksum"`
+		Bytes       int64     `json:"bytes"`
+		PublishedAt time.Time `json:"published_at"`
+	} `json:"resources"`
+}
+
+// newDocResourcesCmd is "earl doc resources" (PLAN.md M9).
+//
+// It is how somebody sees that a slug change took the old file with it. The
+// alternative is looking at the output tree by hand, which is exactly what a
+// system that remembers what it wrote exists to make unnecessary.
+func newDocResourcesCmd() *cobra.Command {
+	var (
+		server string
+		asJSON bool
+	)
+	cmd := &cobra.Command{
+		Use:   "resources UID",
+		Short: "Show the files the publisher has written for a document",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+			var out resourcesResponse
+			if err := client.Get(cmd.Context(), docPath(args[0])+"/resources", &out); err != nil {
+				return err
+			}
+
+			w := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(w, out)
+			}
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "CHANNEL\tURI\tPATH\tBYTES\tPUBLISHED")
+			for _, r := range out.Resources {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
+					r.Channel, r.URI, r.Path, r.Bytes, r.PublishedAt.UTC().Format(time.RFC3339))
+			}
+			return tw.Flush()
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	return cmd
+}

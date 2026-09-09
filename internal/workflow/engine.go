@@ -12,6 +12,7 @@ import (
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/domain"
 	"github.com/mdhender/bricolage/internal/events"
+	"github.com/mdhender/bricolage/internal/ids"
 	"github.com/mdhender/bricolage/internal/store"
 )
 
@@ -273,6 +274,14 @@ func checkGuard(g domain.Guard, t domain.Transition, f facts) error {
 			return g.Refused(t.Name, "this document has no cover date")
 		}
 
+	case domain.GuardHasCheckedInVersion:
+		// The newest checked-in version, not the current one. A document with
+		// three checked-in versions and an open draft has something to
+		// publish; one whose only version is its first draft does not.
+		if f.CheckedIn.ID == 0 {
+			return g.Refused(t.Name, "this document has never been checked in")
+		}
+
 	default:
 		// Unreachable through the store, which parses guards against the
 		// vocabulary and refuses an unknown name. It is here so that adding a
@@ -308,6 +317,24 @@ func outcome(t domain.Transition, f facts) (store.TransitionOutcome, error) {
 	}
 	out.ClearApprovals = t.HasEffect(domain.EffectClearApprovals)
 
+	// EffectPublish is the fifth effect and the one that reaches outside the
+	// document row: it schedules the publish DESIGN.md 6.4 names as the fourth
+	// step of a transition, in the same transaction as the other three
+	// (PLAN.md M9).
+	//
+	// The pin is the document's current checked-in version and never the
+	// document (invariant 8), which is why the facts carry a CheckedIn version
+	// separately from Version: while somebody has the document checked out,
+	// the current version is the open working draft, and publishing that would
+	// put unfinished work live.
+	if t.HasEffect(domain.EffectPublish) {
+		job, err := publishJob(t, f)
+		if err != nil {
+			return store.TransitionOutcome{}, err
+		}
+		out.Jobs = append(out.Jobs, job)
+	}
+
 	// The payload carries enough to reconstruct what happened (invariant 7):
 	// where it went from and to, which transition, who, what they said, and
 	// which guards were satisfied to let it through.
@@ -325,6 +352,13 @@ func outcome(t domain.Transition, f facts) (store.TransitionOutcome, error) {
 	if out.SetDueAt != nil {
 		payload["due_at"] = *out.SetDueAt
 	}
+	if len(out.Jobs) > 0 {
+		scheduled := make([]string, 0, len(out.Jobs))
+		for _, j := range out.Jobs {
+			scheduled = append(scheduled, j.Job.Kind+" "+j.UID)
+		}
+		payload["jobs"] = scheduled
+	}
 	out.Event = domain.Event{
 		Type:       events.DocumentTransitioned,
 		ActorID:    f.Actor.User.ID,
@@ -332,6 +366,53 @@ func outcome(t domain.Transition, f facts) (store.TransitionOutcome, error) {
 		OccurredAt: f.Now,
 	}
 	return out, nil
+}
+
+// publishJob builds the job EffectPublish schedules.
+//
+// It is refused rather than silently skipped when there is nothing to pin. A
+// transition into "published" for a document with no checked-in version is a
+// process that has been configured to publish something that does not exist,
+// and answering it with a state change and no publish is how a document ends
+// up saying "published" over a site that never received it.
+//
+// The uid is minted here because a ULID encodes an instant and this is the
+// layer holding a clock; internal/store has none (invariant 3).
+func publishJob(t domain.Transition, f facts) (store.NewJob, error) {
+	if f.CheckedIn.ID == 0 {
+		return store.NewJob{}, fmt.Errorf(
+			"transition %s publishes document %s and it has no checked-in version to publish: %w",
+			t.Name, f.Document.UID, domain.ErrConflict)
+	}
+	n, err := domain.PublishJob(domain.PublishPayload{
+		DocumentID: f.Document.ID,
+		VersionID:  f.CheckedIn.ID,
+		ActorID:    f.Actor.User.ID,
+	}, f.Now)
+	if err != nil {
+		return store.NewJob{}, err
+	}
+	n = n.Normalize(f.Now)
+	uid, err := ids.New(f.Now)
+	if err != nil {
+		return store.NewJob{}, err
+	}
+	return store.NewJob{
+		UID: uid,
+		Job: n,
+		Event: domain.Event{
+			Type:    events.JobEnqueued,
+			ActorID: f.Actor.User.ID,
+			Payload: map[string]any{
+				"uid":           uid,
+				"kind":          n.Kind,
+				"priority":      n.Priority,
+				"scheduled_for": n.ScheduledFor,
+				"max_attempts":  n.MaxAttempts,
+			},
+			OccurredAt: f.Now,
+		},
+	}, nil
 }
 
 // privilegeError is a transition refused because the actor does not hold the

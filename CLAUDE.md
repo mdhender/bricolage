@@ -108,23 +108,23 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M8 are complete and M9 has not started. `cmsdb` can `init`,
+M0 through M9 are complete and M10 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
-`check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
-refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
-the session, identity, grant, document, version, diff, history, transition,
-workflow, assignment, due-date, queue, job, site, category, output-channel,
-element-type, filing, URI, and preview routes plus `/healthz` and the
-`/preview/` mount. It also hosts the background job workers, behind
-`--workers N` (default 1, `0` to disable), and takes the optional
-`--templates DIR` and `--preview DIR`.
+`check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
+`DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
+§13.4, and serves the session, identity, grant, document, version, diff,
+history, transition, workflow, assignment, due-date, queue, job, site,
+category, output-channel, element-type, filing, URI, preview, publication, and
+resource routes plus `/healthz` and the `/preview/` mount. It also hosts the
+background job workers, behind `--workers N` (default 1, `0` to disable), and
+takes the optional `--templates DIR`, `--preview DIR`, and `--output DIR`.
 `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
 `admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview`.
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish|resources`.
 
-The schema is nine migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is ten migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -139,7 +139,9 @@ answer "unassigned", since SQLite may only use a partial index when the query's
 `WHERE` implies the index's), and `0008_jobs.sql` (the queue), and `0009_categories.sql` (`categories` with
 the materialised path, `document_categories` with its one-primary index,
 `output_channels`, `collections`, `document_collections`, and the last three
-scope columns). `grants` now carries all nine of `DESIGN.md` §7's scope
+scope columns), and `0010_publishing.sql` (`published_resources` and the
+`UPDATE` that gives the default workflow's `Publish` transition its `publish`
+effect and its `has_checked_in_version` guard). `grants` now carries all nine of `DESIGN.md` §7's scope
 dimensions; each arrived with the migration that created its target table,
 because SQLite cannot add a foreign key to a column that already exists.
 `internal/domain` and `internal/authz` have carried and resolved the whole scope
@@ -198,6 +200,38 @@ without them a preview is a 503 naming the flag. A broken template is a
 the line as problem-document extension members; validate mode reports one as a
 200 instead, because the question asked was whether it compiles.
 
+Publishing pins a version and remembers every file it wrote. A publish job's
+payload names a `document_version_id` and never a `document_id` (invariant 8):
+`service.Publish` resolves the newest **checked-in** version at the moment of
+the request, so version 5 approved for midnight is what appears at midnight,
+whatever the draft has become. `store.Publish` does the whole of a publish in
+one transaction — expire the stale rows, upsert the new ones, move
+`documents.live_version_id`, write the event, enqueue the expiry jobs, and then
+call back to write the files — which is the same callback shape
+`ApplyTransition` uses for the engine's check. Writing last is what makes two
+promises properties of the shape: a URI another document holds fails on
+`UNIQUE (output_channel_id, uri)` before a byte is written, detected by result
+code (invariant 11), and a write that fails rolls the rows back with it.
+
+**The output tree is the one place in this system that creates a directory**,
+and `internal/publish/tree.go` says why the exception is narrow. The root
+(`cmsd --output DIR`) must already exist and is never created; what is created
+is the computed interior — `/features/film/2026/03/01/` — which is arithmetic
+over a category path and a URI format rather than a path anybody typed. Every
+path is validated by `domain.OutputPath` and every write goes through an
+`os.Root` on the output directory. `make lint` permits the call in that one
+file and nowhere else, an `os.Root` method included. `cmsdb check --output DIR`
+reconciles the tree with `published_resources` and reports the two opposite
+orphans separately.
+
+Publishing from a transition is `EffectPublish`, the fifth effect, and it comes
+paired with `GuardHasCheckedInVersion`, the eighth guard.
+`domain.Workflow.Validate` refuses one without the other, and refuses either on
+a transition entering a state the workflow does not call publishable. The
+pairing is what keeps invariant 5 true: without the guard the engine would have
+to refuse while applying the effect, after `check` had already said yes, and
+`Available` would offer a move `Do` rejects.
+
 Content is validated against `element_types.schema` on check-in and nowhere
 else. A working draft may be invalid; a checked-in version may not. An element
 type declaring no fields declares that a document of that type carries none, so
@@ -238,10 +272,10 @@ test in `internal/workflow` enforce both. Creating a document is not a
 transition — it starts in the initial state rather than moving into it — so
 `CreateDocument` writes the column once at `INSERT`.
 
-`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render}`
-are real. `internal/{publish,web}` are still a `doc.go` stating the
-package's responsibility and permitted imports — read that doc before adding
-the first real file to one.
+`internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render,publish}`
+are real. `internal/web` is still a `doc.go` stating the package's
+responsibility and permitted imports — read that doc before adding the first
+real file to it.
 
 `--db` names a **directory** that must already exist; the database inside it is
 always `cms.db`. Only `cmsdb init` creates a database and only `cmsdb` migrates
@@ -258,7 +292,9 @@ reason in the PR description.
 The full list is `AGENTS.md`, "Invariants". These are the ones that ordinary
 work walks into:
 
-- Nothing creates a directory — not `cmsdb`, not `cmsd`, not a test helper.
+- Nothing creates a directory it was told to use — not `cmsdb`, not `cmsd`,
+  not a test helper. The one exception is the computed interior of the output
+  tree, in `internal/publish/tree.go`; the root is still never created.
 - All SQL lives in `internal/store`. `internal/domain` does no I/O and imports
   nothing local.
 - `internal/workflow` is the only thing that moves a document. Nothing else

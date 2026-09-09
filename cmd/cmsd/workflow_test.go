@@ -141,6 +141,19 @@ func TestEarlWorkflowCycle(t *testing.T) {
 
 		earl(t, "doc", "do", doc.UID, "--to", "review")
 		earl(t, "doc", "do", doc.UID, "--to", "approved")
+
+		// Publish declares has_checked_in_version, because the publish job it
+		// schedules pins a checked-in version and this document's only version
+		// is still its first draft (PLAN.md M9). The refusal is a prompt, like
+		// note_required: check it in and the move goes through.
+		if _, stderr, code := run(t, bin["earl"], env, "doc", "do", doc.UID, "--to", "published"); code == 0 {
+			t.Error("a document that has never been checked in was published")
+		} else if !strings.Contains(stderr, "has_checked_in_version") {
+			t.Errorf("stderr = %q, want it to name has_checked_in_version", stderr)
+		}
+		earl(t, "doc", "checkout", doc.UID)
+		earl(t, "doc", "checkin", doc.UID, "--note", "ready")
+
 		if got := earl(t, "doc", "do", doc.UID, "--to", "published"); !strings.Contains(got, "moved to published") {
 			t.Fatalf("publish printed %q", got)
 		}

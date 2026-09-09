@@ -669,6 +669,7 @@ const (
     GuardCommentsResolved Guard = "comments_resolved"
     GuardHasSlug          Guard = "has_slug"
     GuardHasCoverDate     Guard = "has_cover_date"
+    GuardHasCheckedInVersion Guard = "has_checked_in_version"   // M9
 )
 ```
 
@@ -680,8 +681,25 @@ const (
     EffectAssignToActor  Effect = "assign_to_actor"
     EffectClearApprovals Effect = "clear_approvals"
     EffectSetDueIn       Effect = "set_due_in"     // parameterised: "48h"
+    EffectPublish        Effect = "publish"        // M9: schedules a pinned publish
 )
 ```
+
+`EffectPublish` is the fifth effect and the only one that reaches outside the
+document row: it enqueues the publish job of §8.1, in the same transaction as
+the move (§6.4, step four). It comes with two rules `Workflow.Validate`
+enforces when the row is read, both of which are invariant 6 in a different
+costume:
+
+- a transition declaring it must **enter a state whose `publishable` is set**,
+  because publishing out of a state the process does not call publishable is a
+  process contradicting itself; and
+- it must also declare **`has_checked_in_version`**, because a publish pins a
+  checked-in version and a document whose only version is its first draft has
+  none. Without the guard the engine would have to refuse while applying the
+  effect — after `check` had already said yes — and `Available` would offer a
+  move `Do` rejects, which is exactly what §6.2 exists to make
+  unrepresentable.
 
 Transitions are data so an editorial process can be configured. Guards are a
 closed set so that every guard which can be configured is one the engine
@@ -936,6 +954,27 @@ CREATE TABLE published_resources (
 ) STRICT;
 ```
 
+`cmsd --output DIR` names the tree those files are written beneath, and the
+paths in `published_resources` are relative to it. It is optional, like
+`--templates` and `--preview`: a server started without it serves everything
+else and answers `503` to a publish, naming the flag it was not given. The
+**root is never created** — a mistyped `--output` is a refusal while the
+process is starting, not a site published into a directory nobody can find.
+
+**The interior of that tree is the one directory this system creates**, and it
+is the single exception to invariant 19. `/features/film/2026/03/01/` is not
+configuration somebody typed; it is computed from a category path, a URI
+format, and a cover date, so there is no typo it could be, and the alternative
+is not "no directories" but an output tree that is not a tree — a publishing
+system whose output no web server can serve. The property invariant 19 buys is
+kept in full, because the root still has to exist. Two things keep the
+exception narrow: every path is validated by `domain.OutputPath` before it is
+used, and every write goes through an `os.Root` opened on the output
+directory, so a category directory named `../../etc` cannot address a byte
+outside the tree even if the first check were wrong. Writes go through a
+temporary file and a rename, because a published file is something a web
+server may be reading at the moment it is replaced.
+
 Remember every file written. On republish, diff the new URI set against the
 stored set and schedule a delete job for every URI no longer produced:
 
@@ -950,6 +989,24 @@ Without this, changing a cover date, category, or slug leaves the file at the
 old URI serving forever. Almost no CMS gets this right. **Build it with
 publishing, not after** — retrofitting means a reconciliation pass over an
 already-dirty output tree.
+
+The diff runs **per output channel**, within the channels the publish covers: a
+publish to the web channel must not expire what the print channel wrote, and a
+channel that produces no address for this document expires everything it
+previously held there. The whole of a publish — the stale rows deleted, the new
+rows written, `documents.live_version_id` moved, the event recorded, the expiry
+jobs enqueued, and then the files written — is **one transaction**, with the
+file writing as a callback the store invokes last. That ordering is what makes
+two of the milestone's promises properties of the shape: a URI another document
+already holds fails on the unique index before a single byte is written, and a
+write that fails rolls the rows back with it, so a failure leaves neither
+partial output nor an orphaned resource row.
+
+`cmsdb check --output DIR` reconciles the two, and reports the opposite
+mistakes separately: a resource row whose file is gone is a page the system
+believes it is serving and is not, and a file no row claims is a page nothing
+will ever expire. Without `--output` the check says the question was not asked
+rather than answering it with a zero it did not earn.
 
 `UNIQUE (output_channel_id, uri)` also gives URI-collision detection for free.
 Detect it by checking for `SQLITE_CONSTRAINT_UNIQUE` on the result code, **never
@@ -972,13 +1029,14 @@ Templates are files on disk, in a tree that mirrors the tree it is searched by:
 <templates>/htmx-app.localhost/story.gohtml
 ```
 
-`cmsd --templates DIR` names the root and `--preview DIR` names the scratch
-tree. Both are optional — M0–M6 is a working editorial system with no
-publishing, and a server started without them serves everything else and
-answers `503` to a preview, naming the flag it was not given. Neither is ever
-created (invariant 19), and both are opened while the process is starting, so a
-directory that is not there is a refusal at startup rather than on the first
-preview.
+`cmsd --templates DIR` names the root, `--preview DIR` names the scratch tree,
+and `--output DIR` names the published tree (§8.3). All three are optional —
+M0–M6 is a working editorial system with no publishing, and a server started
+without them serves everything else and answers `503` to a preview or a
+publish, naming the flag it was not given. None of the three
+roots is ever created (invariant 19), and all three are opened while the process
+is starting, so a directory that is not there is a refusal at startup rather
+than on the first preview.
 
 The **site directory** is the one level the cascade adds to what the paragraph
 above describes, and it is not decoration. Category paths are unique per site
@@ -1215,7 +1273,7 @@ cmsdb migrate up      --db DIR [--to N]       apply pending migrations
 cmsdb bootstrap admin --db DIR --email E --name N [--password-stdin]
 cmsdb seed            --db DIR [--demo]       roles, site, element types; reports the workflow
                                               --demo also queues one noop job to watch
-cmsdb check           --db DIR                integrity: FK check, orphaned resources, stuck leases
+cmsdb check           --db DIR [--output DIR] integrity: FK check, orphaned resources, stuck leases
 cmsdb vacuum          --db DIR
 ```
 
@@ -1238,6 +1296,12 @@ that the editorial cycle and the worker loop can both be watched on a database
 somebody has just made; it needs `bootstrap admin` to have run, because there is
 no system user to attribute either to.
 
+`check --output DIR` additionally reconciles the output tree with
+`published_resources` (§8.3): rows whose file is gone, and files no row claims.
+Both are damage and both fail the check. Without `--output` it says the
+question was not asked, because "0 orphaned resources" from a check that never
+looked is the most misleading line a report could carry.
+
 `check` reports **leases held past expiry** alongside the integrity checks, and
 a count above zero does not fail it. A stuck lease is not damage: it is what a
 worker that died looks like from the outside, and the queue recovers on its own
@@ -1250,7 +1314,7 @@ not worth paging somebody for.
 ```
 cmsd serve --db DIR [--addr 127.0.0.1:18443] [--workers N] [--config FILE]
            [--env development|production] [--timeout DURATION]
-           [--templates DIR] [--preview DIR]
+           [--templates DIR] [--preview DIR] [--output DIR]
 cmsd routes                       print the route table and exit
 cmsd version                      version, commit, Go version
 ```
@@ -1275,10 +1339,14 @@ Serves four things from one process:
 - `/...` — the HTMX UI, `html/template` rendered
 - background job workers, unless `--workers 0`
 
-`--templates` and `--preview` name directories that must already exist and are
-never created (§8.4, invariant 19). Both are optional; without them the server
-answers `503` to a preview, naming the flag it was not given, and serves
-everything else.
+`--templates`, `--preview`, and `--output` name directories that must already
+exist, and none of the three roots is ever created (§8.3, §8.4, invariant 19).
+All three are optional; without them the server answers `503` to a preview or a
+publish, naming the flag it was not given, and serves everything else.
+Publishing needs `--templates` and `--output` together — a template tree with
+nowhere to write is a renderer, and an output tree with nothing to render into
+it is a directory — so a server missing either says so once at startup rather
+than once per attempt.
 
 Graceful shutdown: stop accepting, drain in-flight requests, let workers finish
 the current job or release its lease, close the pool.
@@ -1511,7 +1579,10 @@ earl doc due         UID --at WHEN | --clear
 earl doc approve     UID
 earl doc comment     UID [--reply-to ID] BODY
 earl doc events      UID
-earl publish         UID [--at TIME] [--channel C]... [--dry-run]
+earl doc preview     UID [--channel C] [--validate] [--url]
+earl doc publish     UID [--at WHEN] [--channel C]...
+earl doc resources   UID                            what is at this document's addresses
+earl publish         UID [--dry-run]                the related-asset set (§8.2, M10)
 earl queue           SLUG
 earl job list        [--failed] [--pending] [--kind K] [--limit N]
 earl job retry       UID
@@ -1523,8 +1594,17 @@ Every command supports `--json` for machine-readable output; the default is a
 human-readable table. Configuration from `--server`/`$EARL_SERVER` and a token
 in `~/.config/earl/credentials.json` at mode `0600`.
 
+Publishing and previewing are `earl doc` subcommands rather than the top-level
+`earl publish` this list first showed, because both are operations on one
+document and every other operation on a document is already there. `--at` takes
+what a person types — a date, a timestamp, or a duration — which is the same
+grammar `earl doc due --at` takes, so `48h` cannot mean two things in one
+system.
+
 `earl publish --dry-run` returns the related-asset set that *would* be
-published, with each refusal and its reason. That is the CLI face of §8.2.
+published, with each refusal and its reason. That is the CLI face of §8.2 and
+it arrives with M10; the cascade is what makes a command about more than one
+document worth having.
 
 ## 12. HTTP API
 
@@ -1568,7 +1648,7 @@ GET    /api/v1/documents/{uid}/events
 POST   /api/v1/documents/{uid}/preview           {"channel":"...","validate":bool}
 GET    /preview/{name}                          the rendered preview itself
 
-POST   /api/v1/documents/{uid}/publications      {"at":...,"channels":[...],"dry_run":bool}
+POST   /api/v1/documents/{uid}/publications      {"at":...,"channels":[...],"dry_run":bool} → 202
 GET    /api/v1/documents/{uid}/resources
 
 GET    /api/v1/queues                           the saved definitions
@@ -1690,6 +1770,18 @@ where it went; `GET /preview/{name}` serves it (§8.4). Preview needs `read` ove
 the document and nothing more: previewing changes nothing, takes no edit lease,
 and requiring `publish` would mean the only people who could check a template
 were the people who could put it live.
+
+`POST /documents/{uid}/publications` answers **202**, not 201. Nothing has been
+published: a job has been scheduled, and a publish for next Tuesday answered
+with "created" would be telling the client the page exists. The response names
+the **version the job pinned**, because that is the promise being made and a
+client that could not see it would have to take invariant 8 on trust. It needs
+`publish` over the document, and it refuses a state the workflow does not call
+publishable — a `409`, because that is a statement about the document rather
+than about the person. `GET .../resources` needs only `read`: what is at a
+document's addresses is part of the document, in the same way its history is.
+`dry_run` arrives with the related-asset cascade in M10, which is the milestone
+that gives it something to say.
 
 Requests carry `Idempotency-Key` on `POST`s that create jobs; store the key with
 the created resource and return the same result on replay.

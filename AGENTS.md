@@ -115,7 +115,8 @@ mkdir -p var                       # you create the directory; no command ever w
 go run ./cmd/cmsdb init --db ./var                 # creates ./var/cms.db
 go run ./cmd/cmsdb seed --db ./var                 # roles and their grants, one site
 go run ./cmd/cmsdb bootstrap admin --db ./var --email admin@example.com --name Admin
-go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 --env development --timeout 60m
+go run ./cmd/cmsd serve --db ./var --addr 127.0.0.1:18443 --env development --timeout 60m \
+    --templates ./templates --preview ./var/preview --output ./var/output   # all three optional
 go run ./cmd/earl login --server https://htmx-app.localhost:8443 --dev --email admin@example.com
 go run ./cmd/earl whoami
 ```
@@ -128,13 +129,17 @@ silently creating a user with no role.
 with `--password-stdin`. It never takes a password as a flag — arguments are
 visible in `ps` and land in shell history.
 
-**Rendering needs two directories you create yourself.** `cmsd serve` takes an
-optional `--templates DIR` and `--preview DIR`; without them everything else
-works and `earl doc preview` answers 503 naming the flag it was not given.
-Neither is ever created (invariant 19). The template tree is
+**Rendering and publishing need three directories you create yourself.**
+`cmsd serve` takes an optional `--templates DIR`, `--preview DIR`, and
+`--output DIR`; without them everything else works and `earl doc preview` and
+`earl doc publish` answer 503 naming the flag that was not given. None of the
+three roots is ever created (invariant 19). The template tree is
 `<templates>/<site domain>/<category path>/<element type key>.gohtml`, so for
 the seeded site the fallback template is
-`templates/htmx-app.localhost/story.gohtml`. Full rules: `docs/DESIGN.md` §8.4.
+`templates/htmx-app.localhost/story.gohtml`. The output tree is where published
+files land, at the URI the output channel builds; the directories *inside* it
+are made by `internal/publish` and are the one exception invariant 19 carries.
+Full rules: `docs/DESIGN.md` §8.3 and §8.4.
 
 **`--db` names a directory, not a file** (`DESIGN.md` §13.1). The database
 inside it is always `cms.db`. Nothing in this system creates a directory, so
@@ -308,12 +313,29 @@ These are not style preferences. Violating one is a bug even if the tests pass.
     exported as exactly `production`; without the tag it panics if `CMS_ENV`
     *is* `production`. It reads the raw environment variable, not the resolved
     `environment`, and it must never grow a second responsibility.
-19. **Nothing creates a directory.** `os.Mkdir` and `os.MkdirAll` appear nowhere
-    in the database path — not in `cmsdb`, not in `cmsd`, not in a test helper,
-    not in a convenience wrapper. `--db` names a directory that must already
-    exist, and the database inside it is always the constant `cms.db`. A missing
-    directory is a hard failure naming the directory. A tool that creates what it
-    cannot find turns a typo into a plausible-looking, empty system.
+19. **Nothing creates a directory it was told to use.** `--db`, `--templates`,
+    `--preview`, and `--output` all name directories that must already exist,
+    and the database inside `--db` is always the constant `cms.db`. A missing
+    one is a hard failure naming the directory, at startup rather than at first
+    use. A tool that creates what it cannot find turns a typo into a
+    plausible-looking, empty system. `os.Mkdir` and `os.MkdirAll` appear
+    nowhere in the database path — not in `cmsdb`, not in `cmsd`, not in a test
+    helper, not in a convenience wrapper.
+
+    **The one exception is the interior of the output tree**
+    (`internal/publish/tree.go`, M9). `/features/film/2026/03/01/` is not
+    configuration: it is computed from a category path, a URI format, and a
+    cover date, there is no typo it could be, and the alternative is an output
+    tree that is not a tree — a publishing system whose output no web server
+    can serve. The property invariant 19 buys is kept in full, because the root
+    is still never created. Two things keep the exception narrow: every path is
+    validated by `domain.OutputPath` first, and every write goes through an
+    `os.Root` opened on the output directory, so a category named `../../etc`
+    cannot address a byte outside the tree even if the first check were wrong.
+    `make lint` allows the call in that one file and nowhere else — including
+    through an `os.Root` method, because reaching for `root.MkdirAll` to slip
+    past a grep for `os.MkdirAll` is exactly the convenience wrapper this rule
+    names.
 20. **Only `cmsdb init` creates a database, and only `cmsdb` migrates one.**
     `cmsd` does neither, ever, under any flag. Open flags are always written out
     explicitly, because the zero value of `sqlitex.PoolOptions.Flags` and the

@@ -130,6 +130,25 @@ func (h *harness) doc(t *testing.T, actor domain.Identity, title string) domain.
 	return d
 }
 
+// checkin turns the open working draft into a checked-in version.
+//
+// It is what makes a document publishable: the default workflow's Publish
+// transition declares has_checked_in_version, because a publish pins a
+// checked-in version and a document whose only version is its first draft has
+// none (PLAN.md M9).
+func (h *harness) checkin(t *testing.T, actor domain.Identity, doc domain.Document) domain.Document {
+	t.Helper()
+	if _, _, err := h.db.Checkout(t.Context(), doc.ID, actor.User.ID, start, start.Add(time.Hour),
+		domain.Event{Type: events.DocumentCheckedOut, ActorID: actor.User.ID, OccurredAt: start}); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	if _, _, err := h.db.Checkin(t.Context(), doc.ID, actor.User.ID, start, "ready",
+		domain.Event{Type: events.DocumentCheckedIn, ActorID: actor.User.ID, OccurredAt: start}); err != nil {
+		t.Fatalf("Checkin: %v", err)
+	}
+	return h.reload(t, doc.UID)
+}
+
 // reload reads the document back, because a transition returns a fresh copy
 // and every step after one has to see it.
 func (h *harness) reload(t *testing.T, uid string) domain.Document {
@@ -653,6 +672,7 @@ func TestEffectsAreApplied(t *testing.T) {
 	// visibly a change of assignee rather than the absence of one.
 	moved = h.move(t, editor, moved, "review", "")
 	moved = h.move(t, editor, moved, "approved", "")
+	moved = h.checkin(t, editor, moved)
 	moved = h.move(t, editor, moved, "published", "")
 	h.exec(t, fmt.Sprintf("UPDATE documents SET assigned_to = %d WHERE id = %d", other.User.ID, doc.ID))
 	moved = h.reload(t, doc.UID)
@@ -783,6 +803,7 @@ func TestPrivilegeIsResolvedAgainstTheDocument(t *testing.T) {
 	// In approved it does.
 	doc = h.move(t, editor, doc, "review", "")
 	doc = h.move(t, editor, doc, "approved", "")
+	doc = h.checkin(t, editor, doc)
 	if got := h.move(t, publisher, doc, "published", ""); got.State != "published" {
 		t.Errorf("state = %q, want published", got.State)
 	}
@@ -798,6 +819,7 @@ func TestPublishedIsAStateNotAnExit(t *testing.T) {
 
 	doc = h.move(t, editor, doc, "review", "")
 	doc = h.move(t, editor, doc, "approved", "")
+	doc = h.checkin(t, editor, doc)
 	doc = h.move(t, editor, doc, "published", "")
 
 	menu, err := h.engine.Available(t.Context(), doc, editor)
@@ -883,5 +905,176 @@ func TestAvailableIsOneSnapshot(t *testing.T) {
 	}
 	if got := h.reload(t, doc.UID).State; got != "archived" {
 		t.Errorf("state = %q, want archived", got)
+	}
+}
+
+// TestPublishEffectSchedulesAPinnedJob is PLAN.md M9's transition effect:
+// publishing from a publishable state, in the same transaction as the move
+// (DESIGN.md 6.4, step four).
+//
+// What it asserts beyond "a job appeared" is the pin. The document is checked
+// in, then checked out again and edited, so that its current version is an
+// open working draft and its newest checked-in version is the one before it.
+// The job must name the second, because a publish names a version and never a
+// document (invariant 8).
+func TestPublishEffectSchedulesAPinnedJob(t *testing.T) {
+	h := newHarness(t)
+	editor := h.actor(t, "editor@example.com", domain.Publish)
+	doc := h.doc(t, editor, "Going Live")
+
+	doc = h.move(t, editor, doc, "review", "")
+	doc = h.move(t, editor, doc, "approved", "")
+	doc = h.checkin(t, editor, doc)
+
+	checkedIn, err := h.db.LatestCheckedInVersion(t.Context(), doc.ID)
+	if err != nil {
+		t.Fatalf("LatestCheckedInVersion: %v", err)
+	}
+
+	// The document moves on: a new draft is opened and becomes the current
+	// version, which is exactly what the pin must not follow.
+	if _, _, err := h.db.Checkout(t.Context(), doc.ID, editor.User.ID, start, start.Add(time.Hour),
+		domain.Event{Type: events.DocumentCheckedOut, ActorID: editor.User.ID, OccurredAt: start}); err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	doc = h.reload(t, doc.UID)
+	if doc.CurrentVersionID == checkedIn.ID {
+		t.Fatalf("the checkout did not open a new draft, so this test asserts nothing")
+	}
+
+	// not_locked refuses while the lease is held, which is the guard doing its
+	// job; give it back without discarding the draft.
+	if _, err := h.db.CancelCheckout(t.Context(), doc.ID, editor.User.ID, start,
+		domain.Event{Type: events.DocumentCheckoutCanceled, ActorID: editor.User.ID, OccurredAt: start}); err != nil {
+		t.Fatalf("CancelCheckout: %v", err)
+	}
+	doc = h.reload(t, doc.UID)
+
+	before, err := h.db.QueryJobs(t.Context(), domain.JobFilter{Kind: domain.KindPublish})
+	if err != nil {
+		t.Fatalf("QueryJobs: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("%d publish jobs before the transition", len(before))
+	}
+
+	moved := h.move(t, editor, doc, "published", "")
+	if moved.State != "published" {
+		t.Fatalf("state = %q, want published", moved.State)
+	}
+
+	after, err := h.db.QueryJobs(t.Context(), domain.JobFilter{Kind: domain.KindPublish})
+	if err != nil {
+		t.Fatalf("QueryJobs: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("%d publish jobs after the transition, want one", len(after))
+	}
+	payload, err := domain.ParsePublishPayload(after[0].Payload)
+	if err != nil {
+		t.Fatalf("the scheduled job's payload: %v", err)
+	}
+	if payload.VersionID != checkedIn.ID {
+		t.Errorf("the job pinned version %d, want the newest checked-in version %d",
+			payload.VersionID, checkedIn.ID)
+	}
+	if payload.DocumentID != doc.ID || payload.ActorID != editor.User.ID {
+		t.Errorf("payload = %+v, want the document and the actor", payload)
+	}
+
+	// The job and the move are one change (DESIGN.md 6.4), so the event that
+	// records the move names what it scheduled.
+	history, err := h.db.EventsForSubject(t.Context(), domain.SubjectDocument, doc.ID, 1)
+	if err != nil {
+		t.Fatalf("EventsForSubject: %v", err)
+	}
+	if len(history) != 1 || history[0].Type != events.DocumentTransitioned {
+		t.Fatalf("the newest event is %+v, want the transition", history)
+	}
+	jobs, ok := history[0].Payload["jobs"].([]any)
+	if !ok || len(jobs) != 1 {
+		t.Errorf("the transition event records jobs %v, want the publish it scheduled",
+			history[0].Payload["jobs"])
+	}
+}
+
+// TestARefusedTransitionSchedulesNoJob is PLAN.md M4 acceptance 6 with the
+// fourth step of DESIGN.md 6.4 in it: a failed guard rolls back the state, the
+// events, and the jobs alike.
+func TestARefusedTransitionSchedulesNoJob(t *testing.T) {
+	h := newHarness(t)
+	editor := h.actor(t, "editor@example.com", domain.Publish)
+	doc := h.doc(t, editor, "Refused")
+
+	doc = h.move(t, editor, doc, "review", "")
+	doc = h.move(t, editor, doc, "approved", "")
+
+	// has_checked_in_version refuses: the document's only version is its first
+	// draft, so there is nothing to pin.
+	_, err := h.engine.Do(t.Context(), Request{Document: doc, To: "published", Actor: editor})
+	if err == nil {
+		t.Fatal("a document with no checked-in version was published")
+	}
+	if g, ok := domain.GuardOf(err); !ok || g != domain.GuardHasCheckedInVersion {
+		t.Errorf("err = %v, want the has_checked_in_version guard", err)
+	}
+
+	if got := h.reload(t, doc.UID); got.State != "approved" {
+		t.Errorf("state = %q after a refused move, want approved", got.State)
+	}
+	jobs, err := h.db.QueryJobs(t.Context(), domain.JobFilter{Kind: domain.KindPublish})
+	if err != nil {
+		t.Fatalf("QueryJobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Errorf("a refused transition scheduled %d jobs", len(jobs))
+	}
+}
+
+// TestAWorkflowThatPublishesUnsafelyIsRefused is the cross-check between a
+// transition and its states. Both halves are invariant 6 in a different
+// costume: a configuration that cannot be enforced must be refused when it is
+// read.
+func TestAWorkflowThatPublishesUnsafelyIsRefused(t *testing.T) {
+	h := newHarness(t)
+
+	for _, tc := range []struct {
+		name, query, want string
+	}{
+		{
+			name: "publishing into a state the process does not call publishable",
+			query: `UPDATE workflow_transitions
+			           SET effects = '{"publish":""}',
+			               guards  = '["has_checked_in_version"]'
+			         WHERE from_state = 'draft' AND to_state = 'review'`,
+			want: "not a publishable state",
+		},
+		{
+			name: "publishing without the guard that makes the refusal shared",
+			query: `UPDATE workflow_transitions
+			           SET guards = '["not_locked","has_cover_date"]'
+			         WHERE from_state = 'approved' AND to_state = 'published'`,
+			want: "has_checked_in_version",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			err := h.db.Write(t.Context(), func(conn *sqlite.Conn) error {
+				return sqlitex.ExecuteTransient(conn, tc.query, nil)
+			})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.query, err)
+			}
+			if _, err := h.db.WorkflowFor(t.Context(), domain.KindStory, h.siteID); err == nil {
+				t.Fatal("a workflow that cannot publish safely was loaded")
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %q, want it to say %q", err, tc.want)
+			}
+		})
+	}
+
+	// And the seeded default is not one of them.
+	if err := h.workflow.Validate(); err != nil {
+		t.Errorf("the seeded workflow does not validate: %v", err)
 	}
 }
