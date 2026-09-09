@@ -66,8 +66,9 @@ func New(deps Deps) *Handler {
 // that carries the anti-escalation check; M3 added the document, version,
 // diff, and history routes, M4 the transitions, M5 assignment, due dates, and
 // the queues, M6 the job queue, M7 sites, categories, output channels,
-// element types, and the URIs they produce, M8 the preview, and M9 the
-// publications and the resources they leave behind. The routes that are still
+// element types, and the URIs they produce, M8 the preview, M9 the
+// publications and the resources they leave behind, and M11 the comments and
+// approvals the guards have been reading since M4. The routes that are still
 // missing arrive with the milestones that implement them; a route registered
 // before its service method exists is a 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
@@ -204,6 +205,30 @@ func Register(mux Mux, deps Deps) {
 	// never does the work itself (DESIGN.md 8.1).
 	handle("POST "+Prefix+"documents/{uid}/publications", h.authenticated(h.publishDocument))
 	handle("GET "+Prefix+"documents/{uid}/resources", h.authenticated(h.documentResources))
+
+	// Comments and approvals (PLAN.md M11). Both tables have been in the
+	// schema since M4, with the guards that read them enforced; these are the
+	// routes that let a person write one.
+	//
+	// Two of the five are additions to DESIGN.md 12's list, for the reason
+	// M5's due-date subresource was. GET .../approvals is one: a client that
+	// can record an approval and cannot read one has to infer the count from a
+	// transition refusal, and it is what makes an older version's approvals
+	// visible after a check-in has dropped the live count to zero. The
+	// {uid} on the resolution route is a comment's rather than a document's,
+	// which is DESIGN.md 12 exactly: resolving a thread is an act on the
+	// thread.
+	//
+	// There is deliberately no route that removes a comment and none that
+	// withdraws somebody else's approval. A discussion is an audit record and
+	// an approval is a statement by one person; an editor who disagrees moves
+	// the document, and EffectClearApprovals is how a process discards them.
+	handle("GET "+Prefix+"documents/{uid}/comments", h.authenticated(h.listComments))
+	handle("POST "+Prefix+"documents/{uid}/comments", h.authenticated(h.createComment))
+	handle("POST "+Prefix+"comments/{uid}/resolution", h.authenticated(h.resolveComment))
+	handle("GET "+Prefix+"documents/{uid}/approvals", h.authenticated(h.listApprovals))
+	handle("POST "+Prefix+"documents/{uid}/approvals", h.authenticated(h.approveDocument))
+	handle("DELETE "+Prefix+"documents/{uid}/approvals/current", h.authenticated(h.withdrawApproval))
 
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 	handle("POST "+Prefix+"element-types", h.authenticated(h.createElementType))

@@ -108,14 +108,15 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M10 are complete and M11 has not started. `cmsdb` can `init`,
+M0 through M11 are complete and M12 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
 §13.4, and serves the session, identity, grant, document, version, diff,
 history, transition, workflow, assignment, due-date, queue, job, site,
-category, output-channel, element-type, filing, URI, preview, publication, and
-resource routes plus `/healthz` and the `/preview/` mount. It also hosts the
+category, output-channel, element-type, filing, URI, preview, publication,
+resource, comment, and approval routes plus `/healthz` and the `/preview/`
+mount. It also hosts the
 background job workers, behind `--workers N` (default 1, `0` to disable), and
 takes the optional `--templates DIR`, `--preview DIR`, `--output DIR`, and
 `--related-failure fail|warn`.
@@ -123,9 +124,9 @@ takes the optional `--templates DIR`, `--preview DIR`, `--output DIR`, and
 `admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources`.
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources|comment|comments|resolve|approve [--withdraw]|approvals`.
 
-The schema is ten migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is eleven migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -142,7 +143,10 @@ the materialised path, `document_categories` with its one-primary index,
 `output_channels`, `collections`, `document_collections`, and the last three
 scope columns), and `0010_publishing.sql` (`published_resources` and the
 `UPDATE` that gives the default workflow's `Publish` transition its `publish`
-effect and its `has_checked_in_version` guard). `grants` now carries all nine of `DESIGN.md` §7's scope
+effect and its `has_checked_in_version` guard), and `0011_collaboration.sql`
+(no tables: the `UPDATE` raising the `review` state's `required_approvals` to
+1, now that M11's API can satisfy it, and the `comments_document` index the
+thread listing seeks on). `grants` now carries all nine of `DESIGN.md` §7's scope
 dimensions; each arrived with the migration that created its target table,
 because SQLite cannot add a foreign key to a column that already exists.
 `internal/domain` and `internal/authz` have carried and resolved the whole scope
@@ -305,6 +309,26 @@ all the SQL is still in `internal/store` (invariant 2), and `make lint` plus a
 test in `internal/workflow` enforce both. Creating a document is not a
 transition — it starts in the initial state rather than moving into it — so
 `CreateDocument` writes the column once at `INSERT`.
+
+Comments and approvals get their API in M11, one milestone after the tables and
+five after the guards that read them. Three rules do the work and all three
+come from `DESIGN.md` §5.5. **Approving is authorised by the process rather
+than by a privilege of its own**: an approval exists to satisfy `approvals_met`
+on a transition out of the state the document is in, so what it needs is the
+lowest privilege those transitions ask for (`domain.Workflow.ApprovalPrivilege`),
+and a state no transition counts approvals in refuses everybody, administrator
+included. **Only a checked-in version may be approved**, because a working
+draft is edited in place and the version id that is supposed to expire the
+sign-off would never move. **Both writers are idempotent**: approving twice is
+one row and one event, withdrawing an approval that is not there is not an
+error, and a person may withdraw only their own.
+
+Resolution is a property of the thread, not of each message in it. Only a root
+carries `resolved_at`, `comments_resolved` counts unresolved *roots*, and
+threads are one level deep — replying to a reply joins that reply's thread.
+Commenting needs `read` and resolving needs `edit`, with a thread's author
+always able to resolve their own; neither needs the edit lease, for the reason
+assignment and filing do not.
 
 `internal/{migrate,store,ids,clock,domain,authz,events,service,workflow,jobs,api,reqctx,render,publish}`
 are real. `internal/web` is still a `doc.go` stating the package's

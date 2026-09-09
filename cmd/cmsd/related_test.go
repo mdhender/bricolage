@@ -103,6 +103,9 @@ func TestEarlPublishCascade(t *testing.T) {
 		earl(t, "doc", "checkout", doc.UID)
 		earl(t, "doc", "checkin", doc.UID, "--note", "first cut")
 		earl(t, "doc", "do", doc.UID, "--to", "review")
+		// The sign-off M11 added: the review state now asks for one, and an
+		// approval attaches to the version checked in above.
+		earl(t, "doc", "approve", doc.UID)
 		earl(t, "doc", "do", doc.UID, "--to", "approved")
 		return doc.UID
 	}

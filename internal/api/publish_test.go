@@ -102,6 +102,10 @@ func (h *harness) publishable(t *testing.T, token string) string {
 		{http.MethodPost, "/api/v1/documents/" + uid + "/checkout", nil, http.StatusOK},
 		{http.MethodPost, "/api/v1/documents/" + uid + "/checkin", map[string]any{"note": "ready"}, http.StatusOK},
 		{http.MethodPost, "/api/v1/documents/" + uid + "/transitions", map[string]any{"to": "review"}, http.StatusOK},
+		// The sign-off M11 added: migration 0011 raised the review state's
+		// required_approvals, so Approve is now guarded by an approval
+		// somebody has to record. 201, because this call creates one.
+		{http.MethodPost, "/api/v1/documents/" + uid + "/approvals", nil, http.StatusCreated},
 		{http.MethodPost, "/api/v1/documents/" + uid + "/transitions", map[string]any{"to": "approved"}, http.StatusOK},
 	} {
 		rec := h.do(t, step.method, step.path, token, step.body)
@@ -288,14 +292,17 @@ func (h *harness) approvePublishable(t *testing.T, token, uid string) {
 	for _, step := range []struct {
 		path string
 		body map[string]any
+		want int
 	}{
-		{"/checkout", nil},
-		{"/checkin", map[string]any{"note": "ready"}},
-		{"/transitions", map[string]any{"to": "review"}},
-		{"/transitions", map[string]any{"to": "approved"}},
+		{"/checkout", nil, http.StatusOK},
+		{"/checkin", map[string]any{"note": "ready"}, http.StatusOK},
+		{"/transitions", map[string]any{"to": "review"}, http.StatusOK},
+		// The sign-off M11 added; 201, because this call creates one.
+		{"/approvals", nil, http.StatusCreated},
+		{"/transitions", map[string]any{"to": "approved"}, http.StatusOK},
 	} {
 		rec := h.do(t, http.MethodPost, "/api/v1/documents/"+uid+step.path, token, step.body)
-		if rec.Code != http.StatusOK {
+		if rec.Code != step.want {
 			t.Fatalf("POST %s = %d %s", step.path, rec.Code, rec.Body.String())
 		}
 	}

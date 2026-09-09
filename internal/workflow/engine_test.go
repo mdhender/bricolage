@@ -186,6 +186,34 @@ func (h *harness) exec(t *testing.T, query string) {
 	}
 }
 
+// approvalEvent and commentEvent are the events the two writers below take.
+//
+// They are here rather than as a zero Event because the store requires one:
+// an approval and a comment are state changes, and a state change whose event
+// can be omitted is a state change with no audit record (invariant 7). These
+// tests are about the guards that read the rows, not about the events, so the
+// events are the smallest ones the store will accept.
+func approvalEvent(actor int64) domain.Event {
+	return domain.Event{Type: events.DocumentApproved, ActorID: actor, OccurredAt: start}
+}
+
+func commentEvent(actor int64) domain.Event {
+	return domain.Event{Type: events.DocumentCommented, ActorID: actor, OccurredAt: start}
+}
+
+// approve records a sign-off of the document's current version in the state it
+// is in, which is what migration 0011 made the default process ask for on the
+// way out of review.
+func (h *harness) approve(t *testing.T, actor domain.Identity, doc domain.Document) {
+	t.Helper()
+	if _, _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
+		DocumentID: doc.ID, VersionID: doc.CurrentVersionID, State: doc.State,
+		UserID: actor.User.ID, CreatedAt: start,
+	}, approvalEvent(actor.User.ID)); err != nil {
+		t.Fatalf("CreateApproval: %v", err)
+	}
+}
+
 // allowed finds one entry of the menu by its target state.
 func allowed(t *testing.T, menu []Allowed, to string) Allowed {
 	t.Helper()
@@ -305,10 +333,10 @@ func TestEachGuardPassesAndRefuses(t *testing.T) {
 			guard: domain.GuardApprovalsMet,
 			setup: func(t *testing.T, h *harness, doc domain.Document, actor domain.Identity) {
 				h.exec(t, `UPDATE workflow_states SET required_approvals = 1 WHERE slug = 'draft'`)
-				if _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
+				if _, _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
 					DocumentID: doc.ID, VersionID: doc.CurrentVersionID, State: "draft",
 					UserID: actor.User.ID, CreatedAt: start,
-				}); err != nil {
+				}, approvalEvent(actor.User.ID)); err != nil {
 					t.Fatalf("CreateApproval: %v", err)
 				}
 			},
@@ -331,7 +359,7 @@ func TestEachGuardPassesAndRefuses(t *testing.T) {
 				if _, err := h.db.CreateComment(t.Context(), store.NewComment{
 					UID: ids.MustNew(start), DocumentID: doc.ID, AuthorID: actor.User.ID,
 					Body: "the lede is buried", CreatedAt: start,
-				}); err != nil {
+				}, commentEvent(actor.User.ID)); err != nil {
 					t.Fatalf("CreateComment: %v", err)
 				}
 			},
@@ -562,6 +590,51 @@ func TestFailedGuardRollsBackCleanly(t *testing.T) {
 	}
 }
 
+// TestTwoDistinctUsersSatisfyTwoRequiredApprovals is PLAN.md M11 acceptance 2.
+//
+// It lives here rather than in internal/service because the number it is about
+// is a workflow_states column, and this is the package whose tests reconfigure
+// a workflow. The guard counts distinct people because the UNIQUE constraint
+// on (version_id, state, user_id) makes it a plain COUNT: one person approving
+// twice is one approval, and the refusal still says how far short it is.
+func TestTwoDistinctUsersSatisfyTwoRequiredApprovals(t *testing.T) {
+	h := newHarness(t)
+	h.exec(t, `UPDATE workflow_transitions SET guards = '["approvals_met"]' WHERE from_state = 'draft' AND to_state = 'review'`)
+	h.exec(t, `UPDATE workflow_states SET required_approvals = 2 WHERE slug = 'draft'`)
+
+	actor := h.actor(t, "editor@example.com", domain.Publish)
+	other := h.actor(t, "second-editor@example.com", domain.Publish)
+	doc := h.doc(t, actor, "Two Signatures")
+
+	// One person, approving twice: one approval, and the move still refused.
+	for range 2 {
+		if _, _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
+			DocumentID: doc.ID, VersionID: doc.CurrentVersionID, State: "draft",
+			UserID: actor.User.ID, CreatedAt: start,
+		}, approvalEvent(actor.User.ID)); err != nil {
+			t.Fatalf("CreateApproval: %v", err)
+		}
+	}
+	_, err := h.engine.Do(t.Context(), Request{Document: doc, To: "review", Actor: actor})
+	if g, ok := domain.GuardOf(err); !ok || g != domain.GuardApprovalsMet {
+		t.Fatalf("one person approving twice satisfied two required approvals: %v", err)
+	}
+	if !strings.Contains(err.Error(), "1 of 2") {
+		t.Errorf("the reason is %q, want it to say 1 of 2", err)
+	}
+
+	// A second, distinct person: satisfied.
+	if _, _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
+		DocumentID: doc.ID, VersionID: doc.CurrentVersionID, State: "draft",
+		UserID: other.User.ID, CreatedAt: start,
+	}, approvalEvent(other.User.ID)); err != nil {
+		t.Fatalf("CreateApproval: %v", err)
+	}
+	if got := h.move(t, actor, h.reload(t, doc.UID), "review", ""); got.State != "review" {
+		t.Errorf("state = %q after two distinct approvals, want review", got.State)
+	}
+}
+
 // TestApprovalsMetCountsTheCurrentVersionOnly is PLAN.md M4 acceptance 7.
 //
 // Approvals attach to a version, not a document (DESIGN.md 5.5). Edit the
@@ -584,10 +657,10 @@ func TestApprovalsMetCountsTheCurrentVersionOnly(t *testing.T) {
 		t.Errorf("the reason does not say how far short it is: %v", err)
 	}
 
-	if _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
+	if _, _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
 		DocumentID: doc.ID, VersionID: doc.CurrentVersionID, State: "draft",
 		UserID: actor.User.ID, CreatedAt: start,
-	}); err != nil {
+	}, approvalEvent(actor.User.ID)); err != nil {
 		t.Fatalf("CreateApproval: %v", err)
 	}
 
@@ -656,10 +729,10 @@ func TestEffectsAreApplied(t *testing.T) {
 
 	// clear_approvals, on reject. An approval of the current version is
 	// discarded by the move back to draft.
-	if _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
+	if _, _, err := h.db.CreateApproval(t.Context(), store.NewApproval{
 		DocumentID: doc.ID, VersionID: doc.CurrentVersionID, State: "review",
 		UserID: editor.User.ID, CreatedAt: start,
-	}); err != nil {
+	}, approvalEvent(editor.User.ID)); err != nil {
 		t.Fatalf("CreateApproval: %v", err)
 	}
 	moved = h.move(t, editor, moved, "draft", "needs work")
@@ -671,6 +744,7 @@ func TestEffectsAreApplied(t *testing.T) {
 	// and handed to somebody else there, so that what the revise picks up is
 	// visibly a change of assignee rather than the absence of one.
 	moved = h.move(t, editor, moved, "review", "")
+	h.approve(t, editor, moved)
 	moved = h.move(t, editor, moved, "approved", "")
 	moved = h.checkin(t, editor, moved)
 	moved = h.move(t, editor, moved, "published", "")
@@ -802,6 +876,7 @@ func TestPrivilegeIsResolvedAgainstTheDocument(t *testing.T) {
 
 	// In approved it does.
 	doc = h.move(t, editor, doc, "review", "")
+	h.approve(t, editor, doc)
 	doc = h.move(t, editor, doc, "approved", "")
 	doc = h.checkin(t, editor, doc)
 	if got := h.move(t, publisher, doc, "published", ""); got.State != "published" {
@@ -818,6 +893,7 @@ func TestPublishedIsAStateNotAnExit(t *testing.T) {
 	doc := h.doc(t, editor, "Live")
 
 	doc = h.move(t, editor, doc, "review", "")
+	h.approve(t, editor, doc)
 	doc = h.move(t, editor, doc, "approved", "")
 	doc = h.checkin(t, editor, doc)
 	doc = h.move(t, editor, doc, "published", "")
@@ -923,6 +999,7 @@ func TestPublishEffectSchedulesAPinnedJob(t *testing.T) {
 	doc := h.doc(t, editor, "Going Live")
 
 	doc = h.move(t, editor, doc, "review", "")
+	h.approve(t, editor, doc)
 	doc = h.move(t, editor, doc, "approved", "")
 	doc = h.checkin(t, editor, doc)
 
@@ -1007,6 +1084,7 @@ func TestARefusedTransitionSchedulesNoJob(t *testing.T) {
 	doc := h.doc(t, editor, "Refused")
 
 	doc = h.move(t, editor, doc, "review", "")
+	h.approve(t, editor, doc)
 	doc = h.move(t, editor, doc, "approved", "")
 
 	// has_checked_in_version refuses: the document's only version is its first

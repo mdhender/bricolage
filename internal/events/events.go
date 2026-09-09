@@ -171,6 +171,43 @@ const (
 	// audit trail with holes in it.
 	ResourceExpired = "resource.expired"
 
+	// The collaboration events (PLAN.md M11 acceptance 6). Their subject is
+	// the document rather than the comment or the approval, because "what
+	// happened to this story" is the question a person asks and a thread that
+	// only appears in its own history is a thread nobody finds. The payload
+	// carries the comment's uid, so the row still names the thing it was
+	// about.
+
+	// DocumentCommented is written when somebody opens a thread or replies to
+	// one. The payload names the thread and whether this was a reply; it
+	// carries the body, because a comment *is* what somebody said and a
+	// history that recorded only that somebody spoke would be useless. That
+	// is not the exception DESIGN.md 14 forbids: a document body is content
+	// this system stores versions of, and a remark about it is not.
+	DocumentCommented = "document.commented"
+
+	// DocumentCommentResolved is written when a thread is closed. It is what
+	// turns "the comments_resolved guard refused" into a question with an
+	// answer: who decided this was settled, and when.
+	DocumentCommentResolved = "document.comment_resolved"
+
+	// DocumentApproved is written when somebody signs off on a version in a
+	// state. The payload pins the version, because that is what the approval
+	// is about and what invalidates it: an approval of version 4 says nothing
+	// about version 5, and the event has to be readable after both exist.
+	//
+	// Approving twice is idempotent and writes one event, not two. Nothing
+	// changed the second time, and invariant 7 asks for an event per state
+	// change rather than per request.
+	DocumentApproved = "document.approved"
+
+	// DocumentApprovalWithdrawn is written when somebody takes their sign-off
+	// back. It is its own type rather than a payload flag on the one above,
+	// because "who has approved this" is answered by reading the history
+	// forwards and a withdrawal that looked like an approval would answer it
+	// wrongly.
+	DocumentApprovalWithdrawn = "document.approval_withdrawn"
+
 	// The structure events (PLAN.md M7). Categories, output channels and
 	// element types are configuration rather than content, and every one of
 	// these is a state change that a document's address or validity depends
@@ -242,6 +279,11 @@ var names = map[string]string{
 	JobAbandoned: "Job abandoned",
 	JobRetried:   "Job retried",
 
+	DocumentCommented:         "Commented",
+	DocumentCommentResolved:   "Comment resolved",
+	DocumentApproved:          "Approved",
+	DocumentApprovalWithdrawn: "Approval withdrawn",
+
 	DocumentPublishScheduled: "Publish scheduled",
 	DocumentPublished:        "Published",
 	ResourceExpired:          "Resource expired",
@@ -280,6 +322,10 @@ func All() []string {
 		JobFailed,
 		JobAbandoned,
 		JobRetried,
+		DocumentCommented,
+		DocumentCommentResolved,
+		DocumentApproved,
+		DocumentApprovalWithdrawn,
 		DocumentPublishScheduled,
 		DocumentPublished,
 		ResourceExpired,

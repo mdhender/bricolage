@@ -114,10 +114,18 @@ func (h *publishHarness) story(t *testing.T, title, slug, path string) DocumentV
 
 // approve walks a document to "approved", which is the first state the default
 // workflow calls publishable.
+//
+// The sign-off in the middle is M11's: migration 0011 raised the review
+// state's required_approvals to 1, so Approve is now guarded by an approval
+// somebody has to record. It is one call rather than a fixture because that is
+// what an editor does.
 func (h *publishHarness) approve(t *testing.T, uid string) DocumentView {
 	t.Helper()
 	if _, err := h.Transition(t.Context(), h.owner, uid, "review", ""); err != nil {
 		t.Fatalf("Transition to review: %v", err)
+	}
+	if _, err := h.Approve(t.Context(), h.owner, uid); err != nil {
+		t.Fatalf("Approve: %v", err)
 	}
 	view, err := h.Transition(t.Context(), h.owner, uid, "approved", "")
 	if err != nil {

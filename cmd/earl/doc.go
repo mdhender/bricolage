@@ -79,6 +79,11 @@ func newDocCmd() *cobra.Command {
 		newDocPreviewCmd(),
 		newDocPublishCmd(),
 		newDocResourcesCmd(),
+		newDocCommentCmd(),
+		newDocCommentsCmd(),
+		newDocResolveCmd(),
+		newDocApproveCmd(),
+		newDocApprovalsCmd(),
 	)
 	return cmd
 }

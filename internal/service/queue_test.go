@@ -425,16 +425,24 @@ func TestAssignmentEffectsFireOnTransitions(t *testing.T) {
 	// assign_to_actor, on revise. The document is walked to published first
 	// and assigned to somebody else, so that the effect is visibly a change of
 	// assignee rather than the absence of one.
-	if _, err := h.Transition(t.Context(), h.editor, doc.UID, "approved", ""); err != nil {
-		t.Fatalf("Transition to approved: %v", err)
-	}
-	// Publish declares has_checked_in_version: the publish job it schedules
-	// pins a checked-in version and this document has none yet (PLAN.md M9).
+	//
+	// The check-in comes before the approval and both come before the move.
+	// Publish declares has_checked_in_version, because the publish job it
+	// schedules pins a checked-in version (PLAN.md M9); Approve is guarded by
+	// approvals_met, which migration 0011 gave something to count, and an
+	// approval attaches to a checked-in version rather than to a draft that is
+	// still being written (PLAN.md M11).
 	if _, err := h.Checkout(t.Context(), h.editor, doc.UID); err != nil {
 		t.Fatalf("Checkout: %v", err)
 	}
 	if _, err := h.Checkin(t.Context(), h.editor, doc.UID, "ready"); err != nil {
 		t.Fatalf("Checkin: %v", err)
+	}
+	if _, err := h.Approve(t.Context(), h.editor, doc.UID); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if _, err := h.Transition(t.Context(), h.editor, doc.UID, "approved", ""); err != nil {
+		t.Fatalf("Transition to approved: %v", err)
 	}
 	if _, err := h.Transition(t.Context(), h.editor, doc.UID, "published", ""); err != nil {
 		t.Fatalf("Transition to published: %v", err)

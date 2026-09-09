@@ -616,12 +616,27 @@ up after itself.
 **Schema.** None. `comments` and `approvals` are M4's, and both guards already
 read them; what M11 adds is the API in front of them, and the `UPDATE` raising
 `workflow_states.required_approvals` on the default workflow's `review`, which
-M4 left at 0 because nothing could yet satisfy it.
+M4 left at 0 because nothing could yet satisfy it. Migration 0011 raises it to
+**1** — the value a default process ships with, not the two a large desk
+configures (`DESIGN.md` §5.4) — and adds `comments_document`, the index the
+thread listing seeks on: `comments_open` is partial on `resolved_at IS NULL`
+and answers the guard's question only.
 
 **Work.**
-- Comment threads, replies, resolution.
-- Approve and withdraw approval.
+- Comment threads, replies, resolution. Resolution is a property of the thread:
+  only a root carries it, `comments_resolved` counts unresolved roots, and
+  threads are one level deep (`DESIGN.md` §5.5).
+- Approve and withdraw approval, both idempotent. Approving is authorised by the
+  privilege the transitions declaring `approvals_met` ask for, and only a
+  checked-in version may be approved.
 - API and `earl` commands.
+
+**One consequence worth writing down.** With `review` asking for an approval,
+`has_checked_in_version` can no longer refuse anything in the default process:
+reaching `approved` requires an approval, and an approval requires a checked-in
+version. The guard is still enforced and still necessary for a process that asks
+for no approvals; its end-to-end assertion moved down to `internal/workflow`,
+where a test can configure one.
 
 **Acceptance.**
 1. Approving twice as the same user on the same version is idempotent, not an

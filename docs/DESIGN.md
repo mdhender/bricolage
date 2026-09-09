@@ -575,11 +575,19 @@ row may exist before a workflow does — and the migration that rebuilds
 finds rather than declaring the process a second time: a state machine written
 down twice is a state machine that drifts.
 
-`required_approvals` is 0 on every state of the default process, `review`
-included. `approvals_met` is enforced — the engine reads the column and refuses
-when the count falls short — but nothing can record an approval through the API
-until M11, and a default process no editor can move a document through is not
-one to ship. M11 raises it together with the API that satisfies it.
+`required_approvals` was 0 on every state of the default process until M11.
+`approvals_met` was enforced from M4 — the engine reads the column and refuses
+when the count falls short — but nothing could record an approval through the
+API, and a default process no editor can move a document through is not one to
+ship. Migration 0011 raises `review` to **1**, in the milestone that adds the
+API satisfying it.
+
+One and not two. "Two *distinct* people must approve" is what the `UNIQUE`
+constraint of §5.5 makes cheap and what a large desk configures, but it is a
+value rather than a default: a newsroom with one editor on a Sunday would find
+the default process stuck for exactly the reason this column was left at 0
+until there was a way to satisfy it. Raising it further is one `UPDATE`, which
+is the whole point of it being a column.
 
 Note that `published` is a **state, not an exit**. Bricolage removed a published
 document from workflow entirely, so a live document was nowhere. Here it stays,
@@ -639,11 +647,47 @@ Comments are a thread. Bricolage's entire collaboration story was one
 overwritten note per version. Keep `document_versions.note` as well — the
 check-in message is a different thing from a discussion.
 
+**Resolution is a property of the thread, not of each message in it.** Only a
+root carries `resolved_at` and `resolved_by`; `comments_resolved` counts
+unresolved roots, so a thread with three replies is one open question rather
+than four, and a reply to a settled thread does not reopen it. Resolving a
+reply is refused, and the refusal names the thread. Threads are one level deep
+for the same reason: replying to a reply joins that reply's thread rather than
+starting a branch, so "is this settled" has one answer per discussion.
+
 Both tables land in M4, one milestone before their API, because
-`approvals_met` and `comments_resolved` are two of the seven guards and a guard
+`approvals_met` and `comments_resolved` are two of the eight guards and a guard
 stubbed to "nothing exists" cannot refuse — so it is a guard nobody has tested.
-`internal/store` can write an approval and a comment from M4; the routes that
-let a person write one are M11.
+`internal/store` could write an approval and a comment from M4; the routes that
+let a person write one arrive with M11, and with them three rules that follow
+from the two paragraphs above:
+
+- **Approving is authorised by the process, not by a privilege of its own.** An
+  approval exists to satisfy `approvals_met` on some transition out of the
+  state the document is in, so the person whose sign-off the process counts is
+  the person that transition would let make the move: the privilege required is
+  the lowest one demanded by the transitions out of this state that declare the
+  guard. A state no transition asks approvals of refuses everybody, including an
+  administrator — it is a statement about the process, and a bigger grant would
+  not change it.
+- **Only a checked-in version may be approved.** A working draft is edited in
+  place, so an approval of one would still be attached after the content had
+  changed underneath it: the version id, which is the entire mechanism behind
+  "changes invalidate sign-off", would not have moved. The refusal is a 409.
+- **Both writers are idempotent.** Approving twice is one row and one event;
+  withdrawing an approval that is not there is not an error. A person may
+  withdraw only their own — an approval is a statement by one person, and a
+  system in which somebody else can retract yours has an approval count that
+  means nothing. `EffectClearApprovals` is how a *process* discards them.
+
+Commenting needs `read` and resolving needs `edit`, with the author of a thread
+always able to resolve their own. Raising a concern is what a fact-checker, a
+picture editor, or a lawyer does about a story they may see and may not touch;
+deciding the question is settled changes what the process will allow, and that
+is an act on the document. Neither needs the edit lease: a comment points at
+the document rather than at the working draft, and requiring a checkout to say
+something about a story would mean the only person who could comment on it is
+the one person who cannot be reviewing it.
 
 ## 6. The workflow engine
 
@@ -669,7 +713,7 @@ const (
     GuardAssigneeOnly     Guard = "assignee_only"
     GuardApprovalsMet     Guard = "approvals_met"
     GuardNotLocked        Guard = "not_locked"
-    GuardCommentsResolved Guard = "comments_resolved"
+    GuardCommentsResolved Guard = "comments_resolved"   // open threads, not open comments
     GuardHasSlug          Guard = "has_slug"
     GuardHasCoverDate     Guard = "has_cover_date"
     GuardHasCheckedInVersion Guard = "has_checked_in_version"   // M9
@@ -1636,8 +1680,11 @@ earl doc transitions UID                            what may I do, and why not
 earl doc do          UID TRANSITION [--note N]
 earl doc assign      UID --to USER [--due WHEN] | --nobody
 earl doc due         UID --at WHEN | --clear
-earl doc approve     UID
-earl doc comment     UID [--reply-to ID] BODY
+earl doc approve     UID [--withdraw]
+earl doc approvals   UID [--version N]         who has signed off, and how many are wanted
+earl doc comment     UID [--reply-to UID] BODY
+earl doc comments    UID                       the threads, and how many are open
+earl doc resolve     COMMENT                   close a thread
 earl doc events      UID
 earl doc preview     UID [--channel C] [--validate] [--url]
 earl doc publish     UID [--at WHEN] [--channel C]... [--dry-run]
@@ -1700,10 +1747,11 @@ DELETE /api/v1/documents/{uid}/due
 GET    /api/v1/documents/{uid}/categories
 PUT    /api/v1/documents/{uid}/categories        {"categories":["/features/film/","/features/"]}
 GET    /api/v1/documents/{uid}/uris              the address in every output channel
-POST   /api/v1/documents/{uid}/approvals
+GET    /api/v1/documents/{uid}/approvals       ?version=N for an older one
+POST   /api/v1/documents/{uid}/approvals      201 the first time, 200 the second
 DELETE /api/v1/documents/{uid}/approvals/current
 GET    /api/v1/documents/{uid}/comments
-POST   /api/v1/documents/{uid}/comments
+POST   /api/v1/documents/{uid}/comments       {"body":"...","reply_to":"..."}
 POST   /api/v1/comments/{uid}/resolution
 GET    /api/v1/documents/{uid}/events
 
@@ -1747,6 +1795,24 @@ a scope carries both the id and the path — the resolver matches a subtree by
 prefix on the path and performs no I/O (§7.2) — and taking both from the client
 is what lets them disagree. A grant whose path names a different row from its id
 matches the wrong documents with nothing to notice.
+
+**Approvals are addressed as "mine".** `POST .../approvals` records the caller's
+sign-off and `DELETE .../approvals/current` takes it back; there is no route
+that names somebody else's, because withdrawing another person's approval is not
+an operation this system has (§5.5). `POST` answers 201 the first time and 200
+the second, since approving twice records nothing new. `GET .../approvals` is an
+addition to the list above: a client that can write an approval and not read one
+has to infer the count from a transition refusal, and it is the only way to see
+that an older version's approvals are still there after a check-in has dropped
+the live count to zero.
+
+**A comment thread is resolved through the comment, not through the document.**
+`POST /comments/{uid}/resolution` takes a comment's uid, because deciding a
+question is settled is an act on the discussion rather than on the document it
+hangs from. Resolving a reply is a 409 naming the thread. There is deliberately
+**no route that deletes a comment**: a discussion is an audit record of what
+people said about a story, and a system where it can be removed is a system
+where it cannot be relied on.
 
 There is deliberately **no route that creates a job.** Nothing a person does is
 "enqueue a job": they publish something, and the operation that publishes it

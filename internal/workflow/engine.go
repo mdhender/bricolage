@@ -260,8 +260,12 @@ func checkGuard(g domain.Guard, t domain.Transition, f facts) error {
 		}
 
 	case domain.GuardCommentsResolved:
+		// Threads, not comments. Resolution is a property of the discussion
+		// (DESIGN.md 5.5), so a thread with three replies is one open
+		// question rather than four, and the number the refusal names is the
+		// number a person can act on (PLAN.md M11 acceptance 5).
 		if n := f.UnresolvedComments; n > 0 {
-			return g.Refused(t.Name, fmt.Sprintf("%s unresolved", plural(n, "comment")))
+			return g.Refused(t.Name, fmt.Sprintf("%s unresolved", plural(n, "thread")))
 		}
 
 	case domain.GuardHasSlug:

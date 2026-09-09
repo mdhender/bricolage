@@ -404,6 +404,40 @@ func (w Workflow) Transition(from, to string) (Transition, error) {
 		to, from, w.Name, ErrConflict)
 }
 
+// ApprovalPrivilege reports what an actor must hold over a document to record
+// an approval while it is in a state, and whether the process counts approvals
+// there at all (PLAN.md M11).
+//
+// An approval is not a transition and has no privilege of its own, and giving
+// it one would be a second answer to a question the process has already
+// answered. What an approval does is satisfy GuardApprovalsMet on some move
+// out of the state the document is in, so the person whose sign-off the
+// process counts is the person the process would let make that move: the
+// privilege is the lowest one demanded by the transitions out of this state
+// that declare the guard.
+//
+// The lowest and not the highest, because holding enough for any one of them
+// means the approval can matter to that one. A state no transition asks
+// approvals of reports false, and the service refuses rather than recording a
+// mark nothing will ever read -- which is invariant 6 seen from the other
+// side: a rule nothing enforces lies to whoever configured it, and a datum
+// nothing reads lies to whoever recorded it.
+func (w Workflow) ApprovalPrivilege(state string) (Privilege, bool) {
+	lowest, found := NoPrivilege, false
+	for _, t := range w.From(state) {
+		if !slices.Contains(t.Guards, GuardApprovalsMet) {
+			continue
+		}
+		if !found || t.Privilege < lowest {
+			lowest, found = t.Privilege, true
+		}
+	}
+	if !found {
+		return NoPrivilege, false
+	}
+	return lowest, true
+}
+
 // Validate reports whether a workflow is one the engine will run: an initial
 // state it declares, and transitions between states it declares.
 func (w Workflow) Validate() error {

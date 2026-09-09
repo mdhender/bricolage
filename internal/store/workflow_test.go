@@ -400,24 +400,28 @@ func TestApplyTransitionClearsApprovals(t *testing.T) {
 	f := newDocFixture(t)
 	doc, draft := f.create(t, "Approved Then Not")
 
-	if _, err := f.db.CreateApproval(t.Context(), NewApproval{
+	if _, created, err := f.db.CreateApproval(t.Context(), NewApproval{
 		DocumentID: doc.ID, VersionID: draft.ID, State: "review",
 		UserID: f.author.ID, CreatedAt: f.now,
-	}); err != nil {
-		t.Fatalf("CreateApproval: %v", err)
+	}, f.event(f.author.ID, events.DocumentApproved)); err != nil || !created {
+		t.Fatalf("CreateApproval: created = %t, %v", created, err)
 	}
 	if n, err := f.db.CountApprovals(t.Context(), draft.ID, "review"); err != nil || n != 1 {
 		t.Fatalf("CountApprovals = %d, %v, want 1", n, err)
 	}
 
 	// A second approval by the same person in the same state is one approval,
-	// which is what makes "two distinct people must approve" a plain COUNT.
-	_, err := f.db.CreateApproval(t.Context(), NewApproval{
+	// which is what makes "two distinct people must approve" a plain COUNT --
+	// and, since M11, it is not an error either (PLAN.md M11 acceptance 1).
+	_, created, err := f.db.CreateApproval(t.Context(), NewApproval{
 		DocumentID: doc.ID, VersionID: draft.ID, State: "review",
 		UserID: f.author.ID, CreatedAt: f.now,
-	})
-	if !errors.Is(err, domain.ErrConflict) {
-		t.Errorf("a duplicate approval was accepted: %v", err)
+	}, f.event(f.author.ID, events.DocumentApproved))
+	if err != nil || created {
+		t.Errorf("a duplicate approval reported created = %t, %v; want false, nil", created, err)
+	}
+	if n, err := f.db.CountApprovals(t.Context(), draft.ID, "review"); err != nil || n != 1 {
+		t.Errorf("CountApprovals = %d, %v after approving twice, want 1", n, err)
 	}
 
 	if _, err := f.db.ApplyTransition(t.Context(), TransitionRequest{
@@ -444,10 +448,10 @@ func TestApprovalsAreScopedToOneVersion(t *testing.T) {
 	f := newDocFixture(t)
 	doc, v1 := f.create(t, "Signed Off")
 
-	if _, err := f.db.CreateApproval(t.Context(), NewApproval{
+	if _, _, err := f.db.CreateApproval(t.Context(), NewApproval{
 		DocumentID: doc.ID, VersionID: v1.ID, State: "review",
 		UserID: f.author.ID, CreatedAt: f.now,
-	}); err != nil {
+	}, f.event(f.author.ID, events.DocumentApproved)); err != nil {
 		t.Fatalf("CreateApproval: %v", err)
 	}
 	if _, _, err := f.db.Checkout(t.Context(), doc.ID, f.author.ID, f.now, f.now.Add(time.Hour),
@@ -490,10 +494,10 @@ func TestComments(t *testing.T) {
 		t.Fatalf("a new document has %d open comments, %v, want 0", n, err)
 	}
 
-	id, err := f.db.CreateComment(t.Context(), NewComment{
+	c, err := f.db.CreateComment(t.Context(), NewComment{
 		UID: ids.MustNew(f.now), DocumentID: doc.ID, VersionID: ver.ID,
 		AuthorID: f.author.ID, Body: "the lede is buried", CreatedAt: f.now,
-	})
+	}, f.event(f.author.ID, events.DocumentCommented))
 	if err != nil {
 		t.Fatalf("CreateComment: %v", err)
 	}
@@ -501,8 +505,9 @@ func TestComments(t *testing.T) {
 		t.Fatalf("CountUnresolvedComments = %d, %v, want 1", n, err)
 	}
 
-	if err := f.db.ResolveComment(t.Context(), id, f.other.ID, f.now); err != nil {
-		t.Fatalf("ResolveComment: %v", err)
+	if _, resolved, err := f.db.ResolveComment(t.Context(), c.ID, f.other.ID, f.now,
+		f.event(f.other.ID, events.DocumentCommentResolved)); err != nil || !resolved {
+		t.Fatalf("ResolveComment: resolved = %t, %v", resolved, err)
 	}
 	if n, err := f.db.CountUnresolvedComments(t.Context(), doc.ID); err != nil || n != 0 {
 		t.Errorf("CountUnresolvedComments = %d, %v after resolving, want 0", n, err)

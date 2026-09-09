@@ -140,19 +140,39 @@ func TestEarlWorkflowCycle(t *testing.T) {
 		earl(t, "doc", "do", doc.UID, "--to", "draft", "--note", "the lede is buried")
 
 		earl(t, "doc", "do", doc.UID, "--to", "review")
-		earl(t, "doc", "do", doc.UID, "--to", "approved")
 
-		// Publish declares has_checked_in_version, because the publish job it
-		// schedules pins a checked-in version and this document's only version
-		// is still its first draft (PLAN.md M9). The refusal is a prompt, like
-		// note_required: check it in and the move goes through.
-		if _, stderr, code := run(t, bin["earl"], env, "doc", "do", doc.UID, "--to", "published"); code == 0 {
-			t.Error("a document that has never been checked in was published")
-		} else if !strings.Contains(stderr, "has_checked_in_version") {
-			t.Errorf("stderr = %q, want it to name has_checked_in_version", stderr)
+		// Approve declares approvals_met, and migration 0011 gave the review
+		// state something to count (PLAN.md M11). The refusal is a prompt in
+		// the same way note_required is: record a sign-off and the move goes
+		// through.
+		if _, stderr, code := run(t, bin["earl"], env, "doc", "do", doc.UID, "--to", "approved"); code == 0 {
+			t.Error("an unapproved document moved out of review")
+		} else if !strings.Contains(stderr, "approvals_met") {
+			t.Errorf("stderr = %q, want it to name approvals_met", stderr)
 		}
+
+		// An approval attaches to a version so that a change invalidates the
+		// sign-off, and this document's only version is still its open
+		// working draft: approving one would sign off on something that is
+		// still being written.
+		//
+		// This is also why the publish guard has_checked_in_version can no
+		// longer refuse in the default process. Reaching "approved" now
+		// requires an approval, an approval requires a checked-in version,
+		// and the guard asks for exactly that; it is still enforced and still
+		// necessary for a process that asks for no approvals, and it is
+		// covered directly in internal/workflow (TestPublishEffectRefusesA
+		// DocumentWithNoCheckedInVersion and the guard table beside it).
+		if _, stderr, code := run(t, bin["earl"], env, "doc", "approve", doc.UID); code == 0 {
+			t.Error("an open working draft was approved")
+		} else if !strings.Contains(stderr, "working draft") {
+			t.Errorf("stderr = %q, want it to say the current version is a working draft", stderr)
+		}
+
 		earl(t, "doc", "checkout", doc.UID)
 		earl(t, "doc", "checkin", doc.UID, "--note", "ready")
+		earl(t, "doc", "approve", doc.UID)
+		earl(t, "doc", "do", doc.UID, "--to", "approved")
 
 		if got := earl(t, "doc", "do", doc.UID, "--to", "published"); !strings.Contains(got, "moved to published") {
 			t.Fatalf("publish printed %q", got)

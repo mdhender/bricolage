@@ -11,9 +11,11 @@ import (
 	"zombiezen.com/go/sqlite"
 )
 
-// Workflows, transitions, approvals, and comments. All the SQL for M4 is here
-// (invariant 2); internal/workflow decides what may happen and this decides
-// nothing.
+// Workflows and transitions. All the SQL for M4 is here (invariant 2);
+// internal/workflow decides what may happen and this decides nothing. The
+// tables the two data-driven guards read have files of their own --
+// approvals.go and comments.go -- and the helpers this file calls to load
+// their counts live there with them.
 //
 // This file holds the one statement in the repository that writes
 // documents.state, and it holds it inside ApplyTransition, which cannot be
@@ -29,11 +31,6 @@ import (
 
 // workflowColumns is the projection every workflow read shares.
 const workflowColumns = `id, uid, site_id, kind, name, initial_state`
-
-// CreateApproval and the comment writers below have no API in front of them
-// until M11 (PLAN.md M4, "Schema"). They are here because the guards that read
-// their tables are enforced now, and a guard whose data nothing can produce is
-// a guard nobody has tested (invariant 6).
 
 // WorkflowByUID reads one workflow with its states and transitions.
 func (db *DB) WorkflowByUID(ctx context.Context, uid string) (domain.Workflow, error) {
@@ -281,7 +278,10 @@ type TransitionFacts struct {
 	// makes "changes invalidate sign-off" true (DESIGN.md 5.5).
 	ApprovalsByState map[string]int
 
-	// UnresolvedComments is how many open comments the document carries.
+	// UnresolvedComments is how many open comment threads the document
+	// carries. It counts thread roots: resolution is a property of the
+	// discussion, so a thread with three replies is one open question rather
+	// than four (DESIGN.md 5.5).
 	UnresolvedComments int
 
 	// CheckedIn is the newest version that has been checked in, which is what
@@ -488,45 +488,6 @@ func versionByID(conn *sqlite.Conn, id int64, v *domain.Version) error {
 		})
 }
 
-// approvalsByState counts a version's approvals, keyed by the state they were
-// given in. A version id of 0 has none.
-func approvalsByState(conn *sqlite.Conn, versionID int64) (map[string]int, error) {
-	out := map[string]int{}
-	if versionID == 0 {
-		return out, nil
-	}
-	err := run(conn, fmt.Sprintf("approvals of version %d", versionID), `
-		SELECT state AS state, COUNT(*) AS n
-		  FROM approvals
-		 WHERE version_id = :version_id
-		 GROUP BY state`,
-		func(stmt *sqlite.Stmt) { stmt.SetInt64(":version_id", versionID) },
-		func(stmt *sqlite.Stmt) error {
-			out[stmt.GetText("state")] = int(stmt.GetInt64("n"))
-			return nil
-		})
-	return out, err
-}
-
-// unresolvedComments counts the document's open comments.
-func unresolvedComments(conn *sqlite.Conn, documentID int64) (int, error) {
-	var n int
-	err := one(conn, fmt.Sprintf("open comments on document %d", documentID),
-		`SELECT COUNT(*) AS n FROM comments WHERE document_id = :document_id AND resolved_at IS NULL`,
-		func(stmt *sqlite.Stmt) { stmt.SetInt64(":document_id", documentID) },
-		func(stmt *sqlite.Stmt) error {
-			n = int(stmt.GetInt64("n"))
-			return nil
-		})
-	return n, err
-}
-
-func clearApprovals(conn *sqlite.Conn, versionID int64) error {
-	return run(conn, fmt.Sprintf("clearing the approvals of version %d", versionID),
-		`DELETE FROM approvals WHERE version_id = :version_id`,
-		func(stmt *sqlite.Stmt) { stmt.SetInt64(":version_id", versionID) }, nil)
-}
-
 // TransitionFactsFor loads the same facts ApplyTransition loads, about a
 // document the caller has already read.
 //
@@ -576,132 +537,4 @@ func loadCheckedIn(conn *sqlite.Conn, documentID int64, v *domain.Version) error
 		return nil
 	}
 	return err
-}
-
-// NewApproval is what CreateApproval is given.
-type NewApproval struct {
-	DocumentID int64
-	VersionID  int64
-
-	// State is the state the approval was given in. The guard counts the
-	// approvals of the state a document is leaving.
-	State     string
-	UserID    int64
-	CreatedAt time.Time
-}
-
-// CreateApproval records one person's sign-off of one version in one state.
-//
-// The UNIQUE constraint on (version_id, state, user_id) makes "two distinct
-// people must approve" a plain COUNT(*), and it makes a second approval by the
-// same person a *ConstraintError answering to domain.ErrConflict rather than a
-// silently doubled count.
-//
-// The API that writes one is M11 (PLAN.md M4, "Schema"). This is here because
-// GuardApprovalsMet is enforced now, and a guard whose data nothing can produce
-// is a guard nobody has tested.
-func (db *DB) CreateApproval(ctx context.Context, a NewApproval) (int64, error) {
-	var id int64
-	err := db.Write(ctx, func(conn *sqlite.Conn) error {
-		err := run(conn, fmt.Sprintf("approving version %d in %q", a.VersionID, a.State), `
-			INSERT INTO approvals (document_id, version_id, state, user_id, created_at)
-			VALUES (:document_id, :version_id, :state, :user_id, :created_at)`,
-			func(stmt *sqlite.Stmt) {
-				stmt.SetInt64(":document_id", a.DocumentID)
-				stmt.SetInt64(":version_id", a.VersionID)
-				stmt.SetText(":state", a.State)
-				stmt.SetInt64(":user_id", a.UserID)
-				stmt.SetText(":created_at", formatTime(a.CreatedAt))
-			}, nil)
-		if err != nil {
-			return err
-		}
-		id = conn.LastInsertRowID()
-		return nil
-	})
-	return id, err
-}
-
-// CountApprovals returns how many approvals a version carries in one state.
-func (db *DB) CountApprovals(ctx context.Context, versionID int64, state string) (int, error) {
-	var n int
-	err := db.Read(ctx, func(conn *sqlite.Conn) error {
-		byState, err := approvalsByState(conn, versionID)
-		n = byState[state]
-		return err
-	})
-	return n, err
-}
-
-// NewComment is what CreateComment is given.
-type NewComment struct {
-	UID        string
-	DocumentID int64
-
-	// VersionID is the version the comment is about, or 0 for a comment about
-	// the document as a whole.
-	VersionID int64
-
-	AuthorID  int64
-	Body      string
-	CreatedAt time.Time
-}
-
-// CreateComment opens a comment thread on a document.
-//
-// Comments are a thread; the system we learned from had one overwritten note
-// per version for its entire collaboration story. The thread API is M11
-// (DESIGN.md 5.5). This writer is here for the same reason CreateApproval is:
-// GuardCommentsResolved is enforced now, and PLAN.md M4 acceptance 3 asks for
-// a test in which each of the seven guards refuses.
-func (db *DB) CreateComment(ctx context.Context, c NewComment) (int64, error) {
-	var id int64
-	err := db.Write(ctx, func(conn *sqlite.Conn) error {
-		err := run(conn, fmt.Sprintf("commenting on document %d", c.DocumentID), `
-			INSERT INTO comments (uid, document_id, version_id, author_id, body, created_at)
-			VALUES (:uid, :document_id, :version_id, :author_id, :body, :created_at)`,
-			func(stmt *sqlite.Stmt) {
-				stmt.SetText(":uid", c.UID)
-				stmt.SetInt64(":document_id", c.DocumentID)
-				if c.VersionID == 0 {
-					stmt.SetNull(":version_id")
-				} else {
-					stmt.SetInt64(":version_id", c.VersionID)
-				}
-				stmt.SetInt64(":author_id", c.AuthorID)
-				stmt.SetText(":body", c.Body)
-				stmt.SetText(":created_at", formatTime(c.CreatedAt))
-			}, nil)
-		if err != nil {
-			return err
-		}
-		id = conn.LastInsertRowID()
-		return nil
-	})
-	return id, err
-}
-
-// ResolveComment closes a comment thread.
-func (db *DB) ResolveComment(ctx context.Context, id, userID int64, now time.Time) error {
-	return db.Write(ctx, func(conn *sqlite.Conn) error {
-		return run(conn, fmt.Sprintf("resolving comment %d", id), `
-			UPDATE comments SET resolved_at = :now, resolved_by = :user_id
-			 WHERE id = :id AND resolved_at IS NULL`,
-			func(stmt *sqlite.Stmt) {
-				stmt.SetText(":now", formatTime(now))
-				stmt.SetInt64(":user_id", userID)
-				stmt.SetInt64(":id", id)
-			}, nil)
-	})
-}
-
-// CountUnresolvedComments returns how many open comments a document carries.
-func (db *DB) CountUnresolvedComments(ctx context.Context, documentID int64) (int, error) {
-	var n int
-	err := db.Read(ctx, func(conn *sqlite.Conn) error {
-		var err error
-		n, err = unresolvedComments(conn, documentID)
-		return err
-	})
-	return n, err
 }
