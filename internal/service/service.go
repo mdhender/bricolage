@@ -67,6 +67,14 @@ type Service struct {
 	renderer *render.Engine
 	preview  *render.Scratch
 
+	// origin is the public origin, and the only thing this package uses it for
+	// is the invitation link: an administrator has to paste that into a
+	// message, so it has to be absolute, and an absolute URL comes from
+	// configuration rather than from a request (DESIGN.md 11). A service built
+	// without one mints links against config.DefaultPublicOrigin, which is
+	// what a test gets and what development already serves.
+	origin config.PublicOrigin
+
 	// relatedFailure is what a publish does when a document it would have to
 	// publish cannot be (PLAN.md M10). It is configuration and not schema
 	// (DESIGN.md 8.2, 14), and it is held rather than read per call for the
@@ -130,6 +138,10 @@ type Options struct {
 	// RelatedFailure is the related-asset cascade's policy; the empty string
 	// means config.DefaultRelatedFailure, which is "fail" (DESIGN.md 8.2).
 	RelatedFailure config.RelatedFailure
+
+	// Origin is the public origin invitation links are built against. The zero
+	// value means config.DefaultPublicOrigin.
+	Origin config.PublicOrigin
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -155,6 +167,7 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		renderer:   opts.Renderer,
 		preview:    opts.Preview,
 		publisher:  opts.Publisher,
+		origin:     opts.Origin,
 
 		relatedFailure: opts.RelatedFailure,
 	}
@@ -172,6 +185,18 @@ func New(db *store.DB, opts Options) (*Service, error) {
 	}
 	if s.queues.IsEmpty() {
 		s.queues = config.DefaultQueues()
+	}
+	if s.origin.URL == nil {
+		// The zero origin would render a link with no scheme and no host,
+		// which is worse than a wrong one: it looks like a path and nobody
+		// would notice until somebody could not sign in. internal/server
+		// always supplies an origin; this is the default it would have
+		// supplied.
+		origin, err := config.ParsePublicOrigin(config.DefaultPublicOrigin)
+		if err != nil {
+			return nil, fmt.Errorf("service: the default public origin: %w", err)
+		}
+		s.origin = origin
 	}
 	// An unrecognised policy is refused rather than defaulted, because a
 	// service silently reading a misspelled "warn" as "fail" is a

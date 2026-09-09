@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/mdhender/bricolage/internal/config"
 	"github.com/mdhender/bricolage/internal/service"
@@ -192,4 +193,28 @@ func Register(mux Mux, deps Deps) {
 	handle("GET /admin", h.page(h.admin))
 	handle("POST /admin/grants", h.page(h.createGrant))
 	handle("POST /admin/roles", h.page(h.assignRole))
+
+	// Invitations and the account list (issue #6). Registration is invite-only,
+	// so these two screens are how everybody but the bootstrap administrator
+	// comes to exist -- and the account list is what makes the role form above
+	// usable, since it needs a uid and nothing else here produced one.
+	//
+	// Two verbs and no more: create and revoke. There is deliberately no button
+	// that extends an invitation, renews an expired one, or forces one to
+	// expire (internal/service/invitations.go says why).
+	handle("GET /admin/invitations", h.page(h.invitations))
+	handle("POST /admin/invitations", h.page(h.createInvitation))
+	handle("POST /admin/invitations/{uid}/revoke", h.page(h.revokeInvitation))
+	handle("GET /admin/users", h.page(h.users))
+
+	// Where an invitation link lands. These are the only routes in this package
+	// besides the login form that render without a session, and the path comes
+	// from config so that the link internal/service mints and the route that
+	// answers it cannot drift.
+	//
+	// The POST has no {token} in its path: the link has to carry the credential,
+	// a form does not, so it travels in a hidden field. Redemption issues no
+	// session and ends at /login (issue #6).
+	handle("GET "+invitePath+"{token}", http.HandlerFunc(h.redeemForm))
+	handle("POST "+strings.TrimSuffix(invitePath, "/"), http.HandlerFunc(h.redeem))
 }

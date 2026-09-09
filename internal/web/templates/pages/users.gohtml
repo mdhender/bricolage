@@ -1,0 +1,29 @@
+{{- /* Copyright (c) 2026 Michael D Henderson. */ -}}
+{{define "content"}}
+<h1>Users</h1>
+<p class="sub">Every account, so that giving somebody a role does not require having kept the output of the command that created them. Accounts come from an invitation, or from <code>cmsdb bootstrap admin</code>, and there is no other way in.</p>
+<div class="card">
+  <form method="get" action="/admin/users" class="row">
+    <input type="search" name="q" value="{{.Query}}" placeholder="an address or a name" style="flex:1">
+    <button type="submit">Search</button>
+    {{if .Query}}<a class="button" href="/admin/users">Clear</a>{{end}}
+  </form>
+  <table>
+    <thead><tr><th>Name</th><th>Address</th><th>uid</th><th>Active</th><th>Created</th></tr></thead>
+    <tbody>
+      {{range .Users}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td>{{.Email}}</td>
+          <td class="mono">{{.UID}}</td>
+          <td>{{if .Active}}yes{{else}}no{{end}}</td>
+          <td>{{stamp .CreatedAt}}</td>
+        </tr>
+      {{else}}
+        <tr><td colspan="5" class="empty">no account matches</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="muted">The uid is what <code>/admin</code>&rsquo;s role form and <code>earl admin assign --user</code> both take.</p>
+</div>
+{{end}}

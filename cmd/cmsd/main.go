@@ -235,6 +235,11 @@ func newServeCmd(f *flags) *cobra.Command {
 				Preview:        previews,
 				Publisher:      publisher,
 				RelatedFailure: relatedFailure,
+				// The origin an invitation link is built against. It is the
+				// same value the returnTo check and the CSRF trusted-origin
+				// list use, resolved once above: a link a browser cannot reach
+				// is an invitation nobody can redeem.
+				Origin: settings.origin,
 			})
 			if err != nil {
 				return err

@@ -195,6 +195,14 @@ func TestUIPerformsNothingEarlCannot(t *testing.T) {
 		"POST /jobs/{uid}/retry":                   "POST /api/v1/jobs/{uid}/retry",
 		"POST /admin/grants":                       "POST /api/v1/grants",
 		"POST /admin/roles":                        "POST /api/v1/users/{uid}/roles",
+
+		// Invitations (issue #6). The revocation is the one operation whose
+		// two spellings are identical, which is deliberate: no invitation row
+		// is ever deleted, so a DELETE would be the one DELETE in the API that
+		// does not delete, and the form could not spell it anyway.
+		"POST /admin/invitations":              "POST /api/v1/invitations",
+		"POST /admin/invitations/{uid}/revoke": "POST /api/v1/invitations/{uid}/revoke",
+		"POST /invite":                         "POST /api/v1/invitations/redemption",
 	}
 
 	s := newTestServer(t, config.Production)

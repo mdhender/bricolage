@@ -97,6 +97,33 @@ func Register(mux Mux, deps Deps) {
 	handle("POST "+Prefix+"grants", h.authenticated(h.createGrant))
 	handle("POST "+Prefix+"users/{uid}/roles", h.authenticated(h.assignRole))
 
+	// Invitations and the user lookup that makes the role route above usable
+	// (issue #6). Registration is invite-only: an administrator creates an
+	// invitation, the response carries the link once, and redeeming it creates
+	// the account.
+	//
+	// The redemption route is the only unauthenticated write here besides
+	// POST /sessions, and it issues no session -- the person signs in
+	// afterwards with the password they just set, which is what keeps it from
+	// having login CSRF. It needs no CSRF token of its own: withCSRF in
+	// internal/server wraps the whole mux and a route is protected by being
+	// registered (DESIGN.md 11), so there is nothing to mint and nothing to
+	// render.
+	//
+	// Revocation is POST .../revoke rather than a DELETE, because no
+	// invitation row is ever deleted: the row is the audit record of who
+	// invited whom, and a DELETE that retained it would be the one DELETE here
+	// that does not delete. There is deliberately no route that extends an
+	// invitation, renews an expired one, or forces one to expire; re-inviting
+	// supersedes, and the reasoning is in internal/service/invitations.go.
+	handle("GET "+Prefix+"invitations", h.authenticated(h.listInvitations))
+	handle("POST "+Prefix+"invitations", h.authenticated(h.createInvitation))
+	handle("POST "+Prefix+"invitations/redemption", http.HandlerFunc(h.redeemInvitation))
+	handle("GET "+Prefix+"invitations/{uid}", h.authenticated(h.showInvitation))
+	handle("POST "+Prefix+"invitations/{uid}/revoke", h.authenticated(h.revokeInvitation))
+	handle("GET "+Prefix+"users", h.authenticated(h.listUsers))
+	handle("GET "+Prefix+"users/{uid}", h.authenticated(h.showUser))
+
 	// Documents, versions, and history (PLAN.md M3), and the transitions
 	// M4 adds. Transitions are a subresource on purpose (DESIGN.md 12): GET
 	// says what the state machine permits and why, POST performs one. There

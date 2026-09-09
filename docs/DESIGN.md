@@ -644,6 +644,51 @@ CREATE TABLE comments (
   created_at  TEXT    NOT NULL
 ) STRICT;
 
+-- Created by migration 0013 (§12, issue #6). Registration is invite-only, and
+-- this is the whole of it.
+--
+-- Three properties carry the design. The token is stored as a SHA-256 and never
+-- in the clear, so read access to the file cannot mint a working link. Expiry
+-- is *derived* -- "expires_at < now", computed by the listing query and the
+-- redemption check -- so nothing runs at the 48-hour mark, there is no sweep
+-- job, and there is no second source of truth for a fact the timestamp already
+-- carries. And no row is ever deleted: an invitation is an event subject, and
+-- "who invited this person, and did they ever accept" has to keep an answer.
+--
+-- There is deliberately no 'expired' status, for the reason above.
+-- 'superseded' is what a re-invitation does to the row it replaces, and it says
+-- something true that 'revoked' would not: nobody decided against this person.
+CREATE TABLE invitations (
+  id           INTEGER PRIMARY KEY,
+  uid          TEXT    NOT NULL UNIQUE,
+  email        TEXT    NOT NULL,
+  token_sha256 TEXT,                       -- NULL once the row is terminal
+  status       TEXT    NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','redeemed','revoked','superseded')),
+  expires_at   TEXT    NOT NULL,
+  reason       TEXT,                       -- why it was revoked
+  invited_by   INTEGER REFERENCES users(id),
+  user_id      INTEGER REFERENCES users(id),  -- the account redemption created
+  created_at   TEXT    NOT NULL,
+  settled_at   TEXT
+) STRICT;
+
+-- One live invitation per address, which is document_versions_one_draft and
+-- 0006's two indexes again -- and which has an interaction with derived expiry
+-- worth stating rather than discovering. A *lapsed* invitation still has status
+-- 'pending', because nothing wrote anything when the 48 hours ran out, so this
+-- index reads a dead row as a live one; and SQLite requires a partial index's
+-- WHERE clause to be deterministic, so narrowing it with "AND expires_at > now"
+-- is not available.
+--
+-- What resolves it is that creating an invitation supersedes any row this index
+-- would collide with, in the same transaction. The index is then a backstop
+-- under a race rather than something an administrator ever meets, detected by
+-- result code and never by message text (invariant 11). It also gives the right
+-- security answer for free: the old link dies the instant a new one exists,
+-- which is what "one live link per address" ought to mean.
+CREATE UNIQUE INDEX invitations_one_pending ON invitations (email) WHERE status = 'pending';
+
 -- Created by migration 0009, because grants.collection_id needs a table to
 -- point at. There is no API for writing one yet: internal/authz reads the
 -- column and a grant naming a collection is refused by the foreign key unless
@@ -1854,6 +1899,14 @@ POST   /api/v1/alert-rules                      GET/PATCH/DELETE /{uid}
 
 POST   /api/v1/grants                            write a grant; refuses an escalation (§7.3)
 POST   /api/v1/users/{uid}/roles                 assign a role; the same refusal applies
+GET    /api/v1/users                            ?q= matches an address or a name
+GET    /api/v1/users/{uid}
+
+GET    /api/v1/invitations                      ?status=pending (default), all, or one of the four
+POST   /api/v1/invitations                      {"email":"..."} → 201 carrying the link, once
+GET    /api/v1/invitations/{uid}                never the link
+POST   /api/v1/invitations/{uid}/revoke         {"reason":"..."} optional
+POST   /api/v1/invitations/redemption           unauthenticated; creates the account, issues no session
 
 GET    /api/v1/sites
 GET    /api/v1/categories?site=N                 POST, and GET/PATCH/DELETE /{uid}
@@ -1887,6 +1940,68 @@ watching somebody do. The rule routes are the opposite — a rule names an
 audience and says what it is watched for, so writing or reading one needs
 `create` over the **system subject**, which is the rule element types follow
 and for the same reason (§7).
+
+**Registration is invite-only, and the whole of it is five routes.** There is
+no sign-up route and there will not be one: an administrator creates an
+invitation for an address, the response carries a link *once*, and redeeming it
+creates the account. What is stored is a SHA-256 of the token, the way
+`sessions.token_sha256` already is, so there is nothing to hand back a second
+time and no route that could.
+
+`POST /invitations/redemption` is the one unauthenticated write in the API
+besides `POST /sessions`, and it **issues no session**. The person is left at
+the login form and signs in with the password they just set. That is a security
+decision rather than a stylistic one: CSRF needs an ambient credential and
+redemption has none, so the ordinary attack does not apply — but a redemption
+that *issued* a session would have login CSRF, because an attacker holding an
+invitation could make a victim's browser redeem it with an attacker-chosen
+password and read whatever the victim then wrote. Ending at `/login` removes
+that surface entirely, and it exercises the password while the person still
+remembers typing it.
+
+**Every redemption failure is the same failure.** An unknown token, the wrong
+address, a lapsed invitation, one already redeemed, one revoked, one superseded:
+six causes, one 422, byte for byte. Distinguishing them would make the form an
+oracle for "does this person have an account here", and would turn the
+address check — which is what stops a *forwarded* invitation from working — into
+a way to enumerate who was invited. Which of the six it was goes to the log,
+because an operator debugging a genuine failure needs it and the person on the
+other end must not have it. The rule stops at that route: the administrative
+routes are authenticated and privileged, and an administrator who cannot be told
+why a revocation was refused is being obstructed rather than protected.
+
+**There are two verbs and deliberately no others.** An invitation may be
+created and revoked. There is no route that extends a pending one, renews an
+expired one, or forces one to expire, and the absence is the design:
+
+- *Extending* saves nothing and costs the bound. An administrator cannot see the
+  token — it was shown once — so extending is a decision taken blind about a
+  credential that may be sitting in a forwarded mail; and the invitee has to be
+  told the window moved either way, so what it saves is pasting a link into a
+  message that has to be sent regardless. With it, "48 hours, single use" stops
+  being a property of the system and becomes a property of an administrator's
+  habits.
+- *Renewing* is already spelled "invite again". A second invitation to an
+  address supersedes the first, mints a new token, and starts a fresh 48 hours;
+  the lapsed row stays as its own audit record rather than being edited into a
+  live one.
+- *Forcing expiry* is revoking with a different word in the audit trail, which
+  is what the optional `reason` is for.
+
+Revoking is idempotent, for the reason approving is: the second call changes
+nothing, so there is nothing to report as a conflict. Revoking an invitation
+that was already *redeemed* is a 409 — the account exists, and this operation
+would not remove it (that is §7's deactivation, which does not exist yet).
+
+**`GET /users` exists because `POST /users/{uid}/roles` needs a uid.** Before
+it, the only uid obtainable was the one `cmsdb bootstrap admin` prints at
+creation, so the one identity write in the API could not be used on anybody
+else. Reading the list of accounts is a system-wide question with no document to
+scope it to, so it needs `read` over the **system subject** — the rule the job
+queue follows. Creating and revoking an invitation need `create` over it, as an
+element type and an alert rule do. The split is deliberate: somebody handing
+work over needs a colleague's uid, and making that an administrator's errand
+would be worse than the exposure of a list of names.
 
 **A category is named by its path wherever a person types one.** `/features/film/`
 is what a grant carries and what a URI is built from, and `UNIQUE (site_id,
