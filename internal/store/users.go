@@ -134,6 +134,24 @@ func (db *DB) CountUsers(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// FirstUser reads the oldest user, which is the administrator "cmsdb bootstrap
+// admin" created. It exists so that "cmsdb seed --demo" has somebody to
+// attribute sample content to; document_versions.created_by is a real foreign
+// key and there is no system user to fall back on.
+func (db *DB) FirstUser(ctx context.Context) (domain.User, error) {
+	var u domain.User
+	err := db.Read(ctx, func(conn *sqlite.Conn) error {
+		return one(conn, "the first user",
+			`SELECT `+userColumns+` FROM users ORDER BY id LIMIT 1`, nil,
+			func(stmt *sqlite.Stmt) error {
+				var err error
+				u, err = scanUser(stmt)
+				return err
+			})
+	})
+	return u, err
+}
+
 func scanUser(stmt *sqlite.Stmt) (domain.User, error) {
 	created, err := parseTime(stmt.GetText("created_at"))
 	if err != nil {

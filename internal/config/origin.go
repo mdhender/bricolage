@@ -25,6 +25,16 @@ const DefaultPublicOrigin = "https://htmx-app.localhost:8443"
 // stops working.
 const DefaultSessionTTL = 12 * time.Hour
 
+// DefaultLockLease is how long a document's edit lease lasts before it has to
+// be renewed by activity (DESIGN.md 5.1, PLAN.md M3).
+//
+// The lock is a lease rather than a flag, and this is the number that makes it
+// one. Two hours is long enough that an editor at work never notices it and
+// short enough that an editor who closed their laptop is not still holding the
+// document after lunch. In the system we learned from the equivalent needed an
+// administrator, because there was no equivalent.
+const DefaultLockLease = 2 * time.Hour
+
 // SessionCookieName is the cookie the HTMX UI authenticates with. It is
 // prefixed "__Host-" so the browser enforces what DESIGN.md 14 requires of us:
 // the prefix is only accepted on a cookie that is Secure, has no Domain, and

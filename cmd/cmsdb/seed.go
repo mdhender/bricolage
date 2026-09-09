@@ -10,6 +10,7 @@ import (
 
 	"github.com/mdhender/bricolage/internal/clock"
 	"github.com/mdhender/bricolage/internal/domain"
+	"github.com/mdhender/bricolage/internal/events"
 	"github.com/mdhender/bricolage/internal/ids"
 	"github.com/mdhender/bricolage/internal/store"
 	"github.com/spf13/cobra"
@@ -31,6 +32,19 @@ const (
 const (
 	DefaultSiteName   = "Default"
 	DefaultSiteDomain = "htmx-app.localhost"
+)
+
+// DefaultElementTypeKey is the element type seed creates (DESIGN.md 5.2).
+//
+// Every document points at one, so without it "earl doc create" has nothing to
+// name and a freshly seeded database cannot hold a document. Its schema is an
+// empty field list: M3 stores the schema and does not yet validate content
+// against it (PLAN.md M3, "Schema"), and an empty declaration is the honest
+// starting point rather than a set of fields nobody asked for.
+const (
+	DefaultElementTypeKey    = "story"
+	DefaultElementTypeName   = "Story"
+	DefaultElementTypeSchema = `{"fields":[]}`
 )
 
 // seedRole is one role and the single grant it carries.
@@ -84,18 +98,18 @@ func newSeedCmd() *cobra.Command {
 			}
 			defer db.Close()
 
-			if demo {
-				// --demo seeds sample content, which needs documents. It is
-				// accepted and refused rather than ignored: a flag that is
-				// parsed and does nothing is worse than one that is not there.
-				return fmt.Errorf("--demo has nothing to seed until documents exist (PLAN.md M3)")
+			if err := seed(ctx, db, out); err != nil {
+				return err
 			}
-
-			return seed(ctx, db, out)
+			if demo {
+				return seedDemo(ctx, db, out)
+			}
+			return nil
 		},
 	}
 	addDBFlag(cmd, &dir)
-	cmd.Flags().BoolVar(&demo, "demo", false, "also seed sample content")
+	cmd.Flags().BoolVar(&demo, "demo", false,
+		"also seed one sample document; needs \"cmsdb bootstrap admin\" to have run")
 	return cmd
 }
 
@@ -162,6 +176,107 @@ func seed(ctx context.Context, db *store.DB, out io.Writer) error {
 		return err
 	}
 
+	switch et, err := db.ElementTypeByKeyName(ctx, DefaultElementTypeKey); {
+	case err == nil:
+		fmt.Fprintf(out, "element type: %s (already present)\n", et.KeyName)
+	case errors.Is(err, domain.ErrNotFound):
+		uid, err := ids.New(now)
+		if err != nil {
+			return err
+		}
+		et, err := db.CreateElementType(ctx, store.NewElementType{
+			UID:       uid,
+			KeyName:   DefaultElementTypeKey,
+			Name:      DefaultElementTypeName,
+			Kind:      domain.KindStory,
+			TopLevel:  true,
+			Schema:    DefaultElementTypeSchema,
+			CreatedAt: now,
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "element type: %s (%s)\n", et.KeyName, et.Name)
+	default:
+		return err
+	}
+
 	fmt.Fprintln(out, "seeded")
+	return nil
+}
+
+// demoTitle is the sample document --demo creates. It is one document rather
+// than a library: the flag exists so that somebody can see the editorial cycle
+// working, and a second sample teaches nothing the first did not.
+const demoTitle = "The Quick Brown Fox"
+
+// seedDemo creates one sample document, checked in at version 1.
+//
+// It needs somebody to attribute the content to, because
+// document_versions.created_by is a real foreign key and there is no system
+// user. That makes "cmsdb bootstrap admin" a prerequisite, and the refusal
+// says so rather than inventing an account.
+func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
+	now := clock.Real{}.Now()
+
+	author, err := db.FirstUser(ctx)
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return fmt.Errorf("--demo has nobody to attribute the sample content to; run \"cmsdb bootstrap admin\" first")
+		}
+		return err
+	}
+
+	// Idempotent by title: a second run reports what is already there rather
+	// than stacking copies, which is the same promise the rest of seed makes.
+	existing, err := db.ListDocuments(ctx, 1000)
+	if err != nil {
+		return err
+	}
+	for _, d := range existing {
+		v, err := db.VersionByNumber(ctx, d.ID, 1)
+		if err != nil {
+			return err
+		}
+		if v.Title == demoTitle {
+			fmt.Fprintf(out, "demo: %s (already present, %s)\n", demoTitle, d.UID)
+			return nil
+		}
+	}
+
+	site, err := db.SiteByDomain(ctx, DefaultSiteDomain)
+	if err != nil {
+		return err
+	}
+	et, err := db.ElementTypeByKeyName(ctx, DefaultElementTypeKey)
+	if err != nil {
+		return err
+	}
+	uid, err := ids.New(now)
+	if err != nil {
+		return err
+	}
+
+	doc, _, err := db.CreateDocument(ctx, store.NewDocument{
+		UID:           uid,
+		SiteID:        site,
+		Kind:          domain.KindStory,
+		ElementTypeID: et.ID,
+		Title:         demoTitle,
+		Slug:          "quick-brown-fox",
+		Content:       `{"body":"The quick brown fox jumps over the lazy dog."}`,
+		CreatedBy:     author.ID,
+		CreatedAt:     now,
+		Event: domain.Event{
+			Type:       events.DocumentCreated,
+			ActorID:    author.ID,
+			Payload:    map[string]any{"uid": uid, "title": demoTitle, "seed": true},
+			OccurredAt: now,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "demo: %s (%s, an open working draft)\n", demoTitle, doc.UID)
 	return nil
 }

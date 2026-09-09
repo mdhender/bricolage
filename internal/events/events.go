@@ -36,6 +36,39 @@ const (
 
 	// RoleAssigned is written when a user is given a role.
 	RoleAssigned = "role.assigned"
+
+	// The document lifecycle (PLAN.md M3). Every one of these is written in
+	// the same transaction as the change it records, which is what makes a
+	// document's history a query rather than a hope (invariant 7).
+
+	// DocumentCreated is written when a document comes into existence,
+	// together with its first working draft.
+	DocumentCreated = "document.created"
+
+	// DocumentCheckedOut is written when the edit lease is taken. The payload
+	// carries the version being edited and when the lease runs out, because
+	// "who has this and until when" is the question asked about a document
+	// nobody can edit.
+	DocumentCheckedOut = "document.checked_out"
+
+	// DocumentDraftUpdated is written when the open working draft changes. It
+	// names the fields that changed and never their contents: a document body
+	// is not something this system logs (DESIGN.md 14).
+	DocumentDraftUpdated = "document.draft_updated"
+
+	// DocumentCheckedIn is written when a draft becomes an immutable version.
+	DocumentCheckedIn = "document.checked_in"
+
+	// DocumentCheckoutCanceled is written when the lease is released without
+	// checking in. The draft survives; releasing a lease is not discarding
+	// work, which is what DocumentReverted is for.
+	DocumentCheckoutCanceled = "document.checkout_canceled"
+
+	// DocumentReverted is written when a draft is discarded. The payload says
+	// whether the document survived it: a document whose draft was its only
+	// version is deleted, and that deletion has to be reconstructible from
+	// the event, because the row it was about is gone.
+	DocumentReverted = "document.reverted"
 )
 
 // names are the display names the admin screens and the CLI show. A type with
@@ -48,6 +81,13 @@ var names = map[string]string{
 	SessionDevLogin: "Signed in without a password (development)",
 	GrantCreated:    "Grant created",
 	RoleAssigned:    "Role assigned",
+
+	DocumentCreated:          "Document created",
+	DocumentCheckedOut:       "Checked out",
+	DocumentDraftUpdated:     "Draft edited",
+	DocumentCheckedIn:        "Checked in",
+	DocumentCheckoutCanceled: "Checkout cancelled",
+	DocumentReverted:         "Draft reverted",
 }
 
 // All returns every event type this binary knows, in a stable order.
@@ -59,6 +99,12 @@ func All() []string {
 		SessionDevLogin,
 		GrantCreated,
 		RoleAssigned,
+		DocumentCreated,
+		DocumentCheckedOut,
+		DocumentDraftUpdated,
+		DocumentCheckedIn,
+		DocumentCheckoutCanceled,
+		DocumentReverted,
 	}
 }
 

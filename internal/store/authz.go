@@ -104,12 +104,13 @@ func rolesForUser(conn *sqlite.Conn, userID int64) ([]domain.Role, error) {
 
 // grantColumns is the projection every grant read shares.
 //
-// The scope is four columns wide today. DESIGN.md 7 gives it nine; the other
-// five arrive with the tables they point at, each added by the migration that
-// creates its table (internal/migrate/schema/0003_identity.sql). domain.Scope
-// and internal/authz carry all nine now, so the resolver does not change when
-// a column lands -- only this projection and scanGrant do.
-const grantColumns = `id, role_id, privilege, site_id, doc_kind, state, created_at, created_by`
+// The scope is five columns wide today: document_id arrived with M3, which
+// created the table it points at (internal/migrate/schema/0004_documents.sql).
+// DESIGN.md 7 gives the scope nine dimensions; the rest arrive the same way,
+// each added by the migration that creates its target table. domain.Scope and
+// internal/authz carry all nine now, so the resolver does not change when a
+// column lands -- only this projection and scanGrant do.
+const grantColumns = `id, role_id, privilege, site_id, doc_kind, state, document_id, created_at, created_by`
 
 // GrantsForUser returns every grant carried by every role the user holds.
 //
@@ -132,6 +133,7 @@ func grantsForUser(conn *sqlite.Conn, userID int64) ([]domain.Grant, error) {
 	err := run(conn, fmt.Sprintf("grants for user %d", userID), `
 		SELECT g.id AS id, g.role_id AS role_id, g.privilege AS privilege,
 		       g.site_id AS site_id, g.doc_kind AS doc_kind, g.state AS state,
+		       g.document_id AS document_id,
 		       g.created_at AS created_at, g.created_by AS created_by
 		  FROM grants g
 		  JOIN user_roles ur ON ur.role_id = g.role_id
@@ -181,14 +183,15 @@ func (db *DB) CreateGrant(ctx context.Context, g domain.Grant) (domain.Grant, er
 	out := g
 	err := db.Write(ctx, func(conn *sqlite.Conn) error {
 		err := run(conn, fmt.Sprintf("granting %s over %s", g.Privilege, g.Scope), `
-			INSERT INTO grants (role_id, privilege, site_id, doc_kind, state, created_at, created_by)
-			VALUES (:role_id, :privilege, :site_id, :doc_kind, :state, :created_at, :created_by)`,
+			INSERT INTO grants (role_id, privilege, site_id, doc_kind, state, document_id, created_at, created_by)
+			VALUES (:role_id, :privilege, :site_id, :doc_kind, :state, :document_id, :created_at, :created_by)`,
 			func(stmt *sqlite.Stmt) {
 				stmt.SetInt64(":role_id", g.RoleID)
 				stmt.SetInt64(":privilege", int64(g.Privilege))
 				bindNullInt64(stmt, ":site_id", g.Scope.SiteID)
 				bindNullText(stmt, ":doc_kind", g.Scope.DocKind)
 				bindNullText(stmt, ":state", g.Scope.State)
+				bindNullInt64(stmt, ":document_id", g.Scope.DocumentID)
 				stmt.SetText(":created_at", formatTime(g.CreatedAt))
 				if g.CreatedBy == 0 {
 					stmt.SetNull(":created_by")
@@ -219,9 +222,10 @@ func scanGrant(stmt *sqlite.Stmt) (domain.Grant, error) {
 		RoleID:    stmt.GetInt64("role_id"),
 		Privilege: domain.Privilege(stmt.GetInt64("privilege")),
 		Scope: domain.Scope{
-			SiteID:  nullInt64(stmt, "site_id"),
-			DocKind: nullText(stmt, "doc_kind"),
-			State:   nullText(stmt, "state"),
+			SiteID:     nullInt64(stmt, "site_id"),
+			DocKind:    nullText(stmt, "doc_kind"),
+			State:      nullText(stmt, "state"),
+			DocumentID: nullInt64(stmt, "document_id"),
 
 			// CategoryDeep is the schema's default until the column exists.
 			// A grant with no category constraint is unaffected by it.

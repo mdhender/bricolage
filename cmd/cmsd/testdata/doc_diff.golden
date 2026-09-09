@@ -1,0 +1,6 @@
+--- version 1
++++ version 2
+@@ title @@
+The [-Quick-]{+Slow+} Brown Fox
+@@ content @@
+{"body":"The [-quick-]{+slow+} brown fox [-jumps over-]{+ambles past+} the lazy {+sleeping+} dog."}

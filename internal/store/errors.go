@@ -3,8 +3,10 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 
+	"github.com/mdhender/bricolage/internal/domain"
 	"github.com/mdhender/bricolage/internal/migrate"
 )
 
@@ -102,3 +104,11 @@ func (e *VersionError) Error() string {
 	return fmt.Sprintf("database %q: user_version is %d, expected %d, which is the number of migrations this binary embeds: %s",
 		e.Path, e.Got, e.Want, remedy)
 }
+
+// isNotFound and isConflict are the two questions this package asks of an
+// error it produced itself, inside a transaction, to decide what to do next.
+// They are here rather than written out at each call site so that "no rows"
+// means one thing in this package.
+func isNotFound(err error) bool { return errors.Is(err, domain.ErrNotFound) }
+
+func isConflict(err error) bool { return errors.Is(err, domain.ErrConflict) }

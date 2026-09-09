@@ -60,7 +60,10 @@ func newHarness(t *testing.T) *harness {
 	return &harness{mux: mux, svc: svc, clock: c, db: db}
 }
 
-// user creates a user with a password and one global grant.
+// user creates a user with a password and one global grant. NoPrivilege
+// creates the user and no grant at all, which is a person with an account and
+// no access -- the case that must come back as "not found" rather than as
+// "not permitted".
 func (h *harness) user(t *testing.T, email string, p domain.Privilege) domain.User {
 	t.Helper()
 	u, err := h.svc.CreateUser(t.Context(), service.NewUser{Email: email, Name: "Test User", Password: password})
@@ -74,10 +77,12 @@ func (h *harness) user(t *testing.T, email string, p domain.Privilege) domain.Us
 	if err := h.db.AssignRole(t.Context(), u.ID, role.ID); err != nil {
 		t.Fatalf("AssignRole: %v", err)
 	}
-	if _, err := h.db.CreateGrant(t.Context(), domain.Grant{
-		RoleID: role.ID, Privilege: p, CreatedAt: start,
-	}); err != nil {
-		t.Fatalf("CreateGrant: %v", err)
+	if p != domain.NoPrivilege {
+		if _, err := h.db.CreateGrant(t.Context(), domain.Grant{
+			RoleID: role.ID, Privilege: p, CreatedAt: start,
+		}); err != nil {
+			t.Fatalf("CreateGrant: %v", err)
+		}
 	}
 	return u
 }

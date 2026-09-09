@@ -12,7 +12,7 @@ import (
 func Version() semver.Version {
 	return semver.Version{
 		Major:      0,
-		Minor:      3,
+		Minor:      4,
 		Patch:      0,
 		PreRelease: "beta",
 		Build:      semver.Commit(),

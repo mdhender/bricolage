@@ -16,5 +16,9 @@
 // cannot drift apart in the direction of exempting a cookie.
 //
 // Permitted imports: internal/service, internal/domain, internal/authz,
-// internal/config, internal/reqctx.
+// internal/config, internal/reqctx, internal/events. The last is the event
+// vocabulary's display-name registry: DESIGN.md 10 says the screens list event
+// types from code rather than from a SELECT, and a transport rendering a
+// history is one of those screens. It is a leaf of constants either way, so
+// the dependency still points downward.
 package api

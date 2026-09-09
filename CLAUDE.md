@@ -106,20 +106,30 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0, M1, and M2 are complete and M3 has not started. `cmsdb` can `init`,
-`migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed`, `check`,
-and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`, refuses to
-start on any of the four failures in `DESIGN.md` §13.4, and serves the session,
-identity, and grant routes plus `/healthz`. `earl` can `login` (with `--dev`),
-`whoami`, `logout`, `admin grant`, and `admin assign`.
+M0 through M3 are complete and M4 has not started. `cmsdb` can `init`,
+`migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
+`check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
+refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
+the session, identity, grant, document, version, diff, and history routes plus
+`/healthz`. `earl` can `login` (with `--dev`), `whoami`, `logout`,
+`admin grant`, `admin assign`, and
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events`.
 
-The schema is three migrations — `0001_users.sql`, `0002_events.sql`, and
-`0003_identity.sql`, which adds `password_hash`, `roles`, `user_roles`,
-`sites`, `grants`, and `sessions`. `grants` carries the scope columns whose
-target table exists; the rest arrive with the migration that creates theirs,
-because SQLite cannot add a foreign key to a column that already exists.
+The schema is four migrations — `0001_users.sql`, `0002_events.sql`,
+`0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
+`sessions`), and `0004_documents.sql` (`element_types`, `documents`,
+`document_versions` with the immutability trigger and the one-open-draft index,
+and `grants.document_id`). `grants` carries the scope columns whose target
+table exists; the rest arrive with the migration that creates theirs, because
+SQLite cannot add a foreign key to a column that already exists.
 `internal/domain` and `internal/authz` already carry and resolve the whole
 scope.
+
+`documents` has no `workflow_id` and no `state` yet, deliberately: the
+composite foreign key to `workflow_states` cannot be added by `ALTER TABLE`, so
+M4 creates the workflow tables and rebuilds `documents` through SQLite's
+twelve-step procedure. Nothing writes `documents.state` today and nothing may —
+`internal/workflow` is its only writer (invariant 4).
 
 `internal/{migrate,store,ids,clock,domain,authz,events,service,api,reqctx}` are
 real. `internal/{workflow,publish,jobs,render,web}` are still a `doc.go`

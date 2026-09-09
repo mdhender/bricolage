@@ -29,6 +29,11 @@ type Service struct {
 	// authenticating it writes a new one. Recording every request would put a
 	// write on the single write connection in front of every read.
 	touchAfter time.Duration
+
+	// lockLease is how long a document's edit lease lasts. It is a duration
+	// rather than a flag on the row because the lock is a lease: activity
+	// extends it and time ends it (DESIGN.md 5.1).
+	lockLease time.Duration
 }
 
 // Options configure a Service. Everything is resolved before New is called;
@@ -49,6 +54,10 @@ type Options struct {
 	// TouchAfter is the staleness threshold for last_seen_at; zero means one
 	// minute.
 	TouchAfter time.Duration
+
+	// LockLease is how long a document's edit lease lasts; zero means
+	// config.DefaultLockLease.
+	LockLease time.Duration
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -69,6 +78,7 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		log:        opts.Logger,
 		sessionTTL: opts.SessionTTL,
 		touchAfter: opts.TouchAfter,
+		lockLease:  opts.LockLease,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -78,6 +88,9 @@ func New(db *store.DB, opts Options) (*Service, error) {
 	}
 	if s.touchAfter <= 0 {
 		s.touchAfter = DefaultTouchAfter
+	}
+	if s.lockLease <= 0 {
+		s.lockLease = config.DefaultLockLease
 	}
 	return s, nil
 }
@@ -92,3 +105,6 @@ func (s *Service) Now() time.Time { return s.clock.Now().UTC() }
 
 // SessionTTL is how long a session issued by this service lasts.
 func (s *Service) SessionTTL() time.Duration { return s.sessionTTL }
+
+// LockLease is how long a document's edit lease lasts.
+func (s *Service) LockLease() time.Duration { return s.lockLease }

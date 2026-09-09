@@ -106,6 +106,35 @@ func (db *DB) Write(ctx context.Context, fn func(conn *sqlite.Conn) error) error
 	return fn(db.write)
 }
 
+// Tx runs fn inside one immediate write transaction on the single write
+// connection, committing when fn returns nil and rolling back otherwise.
+//
+// It exists because a state change and the event recording it are one change
+// (invariant 7). An event that can be rolled back separately from the row it
+// describes is not an audit record, and a row whose event was rolled back is a
+// change nobody can account for. Everything in this package that writes more
+// than one row goes through here.
+//
+// IMMEDIATE rather than DEFERRED: the write lock is taken at BEGIN rather than
+// at the first write, so a transaction that will contend does so before it has
+// read anything it would have to re-read.
+func (db *DB) Tx(ctx context.Context, fn func(conn *sqlite.Conn) error) error {
+	return db.Write(ctx, func(conn *sqlite.Conn) (err error) {
+		end, beginErr := sqlitex.ImmediateTransaction(conn)
+		if beginErr != nil {
+			return fmt.Errorf("beginning a transaction: %w", beginErr)
+		}
+		// The closure's return is named so that end, which commits or rolls
+		// back depending on what it points at and may report a failure of its
+		// own, can reach the value being returned. An unnamed return here
+		// would be evaluated before the defer ran, and a failed commit would
+		// be reported as success.
+		defer end(&err)
+		err = fn(conn)
+		return err
+	})
+}
+
 // Close closes the writer and the reader pool. It is idempotent, so a
 // command's defer and a server's shutdown may both call it.
 func (db *DB) Close() error {

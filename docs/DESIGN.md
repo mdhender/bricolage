@@ -277,7 +277,27 @@ WHEN OLD.checked_in_at IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'checked-in versions are immutable');
 END;
+
+CREATE UNIQUE INDEX document_versions_one_draft
+  ON document_versions(document_id) WHERE checked_in_at IS NULL;
 ```
+
+**One open working draft per document, enforced by a partial unique index.**
+Every operation above assumes it: checkout finds *the* draft, check-in closes
+*the* draft, revert discards *the* draft. A second open draft would make each of
+those queries return an arbitrary row, and the failure would look like lost
+edits rather than like a bug.
+
+`workflow_id` and `state` are the last two columns to land. M3 creates this
+table without them, because SQLite can neither add a foreign key to an existing
+column nor add a table-level composite one at all, and a column added without
+its `REFERENCES workflow_states(workflow_id, slug)` would never get it —
+the "rule column nothing reads" of invariant 6. M4 creates the workflow tables
+and rebuilds `documents` through SQLite's documented twelve-step `ALTER`
+procedure, which is the only way to attach the composite key, and adds the
+`documents_queue` index that needs both columns. This is the same discipline
+0003 applied to the scope columns of `grants`: each arrives with the migration
+that creates the table it points at.
 
 Three defects in the original die here, by construction rather than by care:
 
@@ -1206,6 +1226,7 @@ POST   /api/v1/documents                         create
 GET    /api/v1/documents/{uid}
 PATCH  /api/v1/documents/{uid}                   metadata: title, slug, categories, due
 POST   /api/v1/documents/{uid}/checkout
+DELETE /api/v1/documents/{uid}/checkout        release the lease, keeping the draft
 POST   /api/v1/documents/{uid}/checkin
 POST   /api/v1/documents/{uid}/revert
 GET    /api/v1/documents/{uid}/versions
@@ -1244,6 +1265,12 @@ Modelling **transitions as a subresource** is the point of the design: `GET`
 tells you what the state machine permits and why, `POST` performs one. It makes
 the workflow visible in the API instead of hiding it behind `PATCH state=`.
 Never expose a plain `PATCH` that sets `state`.
+
+The checkout is a subresource for the same reason. `POST` takes the edit lease,
+and `DELETE` releases it **without discarding the draft** — which is a different
+act from `revert`, and the difference matters: cancelling says "I am not editing
+this now", reverting says "throw away what I wrote". Folding them into one call
+is how somebody loses an afternoon to a button they thought closed a form.
 
 Errors are RFC 9457 problem documents:
 

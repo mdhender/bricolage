@@ -62,10 +62,11 @@ func New(deps Deps) *Handler {
 
 // Register adds the JSON API routes to mux (DESIGN.md 12).
 //
-// M2 registers the session and identity routes, and the grant-writing route
-// that carries the anti-escalation check. The document, workflow, and
-// publishing routes arrive with the milestones that implement them; a route
-// registered before its service method exists is a 501 nobody asked for.
+// M2 registered the session and identity routes and the grant-writing route
+// that carries the anti-escalation check; M3 adds the document, version, diff,
+// and history routes. The workflow and publishing routes arrive with the
+// milestones that implement them; a route registered before its service method
+// exists is a 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
 	h := New(deps)
 
@@ -90,6 +91,24 @@ func Register(mux Mux, deps Deps) {
 	handle("GET "+Prefix+"me", h.authenticated(h.me))
 	handle("POST "+Prefix+"grants", h.authenticated(h.createGrant))
 	handle("POST "+Prefix+"users/{uid}/roles", h.authenticated(h.assignRole))
+
+	// Documents, versions, and history (PLAN.md M3). Transitions are
+	// deliberately absent: the workflow engine is M4, and a document has no
+	// state until it exists.
+	handle("GET "+Prefix+"documents", h.authenticated(h.listDocuments))
+	handle("POST "+Prefix+"documents", h.authenticated(h.createDocument))
+	handle("GET "+Prefix+"documents/{uid}", h.authenticated(h.showDocument))
+	handle("PATCH "+Prefix+"documents/{uid}", h.authenticated(h.patchDocument))
+	handle("POST "+Prefix+"documents/{uid}/checkout", h.authenticated(h.checkoutDocument))
+	handle("DELETE "+Prefix+"documents/{uid}/checkout", h.authenticated(h.cancelCheckout))
+	handle("POST "+Prefix+"documents/{uid}/checkin", h.authenticated(h.checkinDocument))
+	handle("POST "+Prefix+"documents/{uid}/revert", h.authenticated(h.revertDocument))
+	handle("GET "+Prefix+"documents/{uid}/versions", h.authenticated(h.listVersions))
+	handle("GET "+Prefix+"documents/{uid}/versions/{n}", h.authenticated(h.showVersion))
+	handle("GET "+Prefix+"documents/{uid}/diff", h.authenticated(h.diffDocument))
+	handle("GET "+Prefix+"documents/{uid}/events", h.authenticated(h.documentEvents))
+
+	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 }
 
 // unavailable answers a request that reached a route built without a service.
