@@ -6,7 +6,7 @@
   <form method="get" action="/documents" class="row">
     <span>
       <label for="state">State</label>
-      <select id="state" name="state">
+      <select id="state" name="state" {{noAutofill}}>
         <option value="">any</option>
         {{$sel := .Filter.State}}
         {{range .States}}<option value="{{.}}"{{if eq . $sel}} selected{{end}}>{{.}}</option>{{end}}
@@ -14,7 +14,7 @@
     </span>
     <span>
       <label for="assignee">Assignee</label>
-      <input id="assignee" name="assignee" value="{{.Filter.Assignee}}" placeholder="me, nobody, or a user uid">
+      <input id="assignee" name="assignee" value="{{.Filter.Assignee}}" placeholder="me, nobody, or a user uid" {{noAutofill}}>
     </span>
     <span>
       <label for="overdue">Overdue</label>

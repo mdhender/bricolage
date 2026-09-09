@@ -442,6 +442,10 @@ work walks into:
 - One shutdown path, reached by SIGTERM, `--timeout`, and the dev route alike.
 - Migrations are append-only *after beta*; the beta exception is a deliberate,
   separately announced squash, not a licence to edit one during ordinary work.
+- Autocomplete is denied by default on every form control (invariant 23). A
+  field opts in only if it holds the credentials of the person looking at the
+  screen, and says why in the template; two do. A control that declares nothing
+  fails a test in `internal/web`.
 - Every Go file carries the copyright and MIT header.
 
 ## Commit workflow

@@ -3,6 +3,11 @@
 <h1>Sign in</h1>
 <p class="sub">This is the same login the JSON API performs; what differs is that the token is written to a cookie and never shown.</p>
 {{with .Problem}}<p class="problem">{{.}}</p>{{end}}
+{{- /* One of the two forms in this UI that opt IN to autofill (invariant 23).
+       The justification: every box on it holds the credentials of the person
+       looking at the screen, which is the whole of what a password manager is
+       for. Filling this form is the manager working, not the manager guessing.
+       Every other form in this UI denies with {{noAutofill}}. */ -}}
 <div class="card" style="max-width:26rem">
   <form method="post" action="/login">
     <input type="hidden" name="returnTo" value="{{.ReturnTo}}">

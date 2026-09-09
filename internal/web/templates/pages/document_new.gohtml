@@ -5,23 +5,23 @@
 <div class="card">
   <form method="post" action="/documents">
     <label for="site">Site</label>
-    <select id="site" name="site" required>
+    <select id="site" name="site" required {{noAutofill}}>
       {{range .Sites}}<option value="{{.ID}}">{{.Name}} ({{.Domain}})</option>{{end}}
     </select>
     <label for="kind">Kind</label>
-    <select id="kind" name="kind" required>
+    <select id="kind" name="kind" required {{noAutofill}}>
       {{range .Kinds}}<option value="{{.}}">{{.}}</option>{{end}}
     </select>
     <label for="element_type">Element type</label>
-    <select id="element_type" name="element_type" required>
+    <select id="element_type" name="element_type" required {{noAutofill}}>
       {{range .ElementTypes}}<option value="{{.KeyName}}">{{.Name}} ({{.KeyName}})</option>{{end}}
     </select>
     <label for="title">Title</label>
-    <input id="title" name="title" required>
+    <input id="title" name="title" required {{noAutofill}}>
     <label for="slug">Slug</label>
-    <input id="slug" name="slug">
+    <input id="slug" name="slug" {{noAutofill}}>
     <label for="cover_date">Cover date</label>
-    <input id="cover_date" name="cover_date" placeholder="2026-03-01">
+    <input id="cover_date" name="cover_date" placeholder="2026-03-01" {{noAutofill}}>
     <p><button class="primary" type="submit">Create</button></p>
   </form>
 </div>

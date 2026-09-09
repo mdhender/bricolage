@@ -9,7 +9,7 @@
   <h2>Send this link to {{.Invitation.Email}}</h2>
   <p class="sub">This is the only time it is shown. It stops working at {{stamp .Invitation.ExpiresAt}} UTC, or the moment it is used, or the moment you invite this address again.</p>
   <p class="row">
-    <input id="invitation-link" type="text" readonly value="{{.Link}}" style="flex:1" onfocus="this.select()">
+    <input id="invitation-link" type="text" readonly value="{{.Link}}" style="flex:1" onfocus="this.select()" {{noAutofill}}>
     <button type="button" class="primary" data-copy="invitation-link">Copy</button>
   </p>
   <p class="muted">There is no e-mail transport yet, so sending it is yours to do. With JavaScript off, the box above selects itself when you click it.</p>
@@ -64,7 +64,7 @@ document.querySelectorAll("button[data-copy]").forEach(function (button) {
           <td>
             {{if eq .Status "pending"}}
               <form class="inline-form" method="post" action="/admin/invitations/{{.UID}}/revoke">
-                <input type="text" name="reason" placeholder="why (optional)">
+                <input type="text" name="reason" placeholder="why (optional)" {{noAutofill}}>
                 <button type="submit">Revoke</button>
               </form>
             {{end}}
@@ -82,7 +82,14 @@ document.querySelectorAll("button[data-copy]").forEach(function (button) {
   <p class="sub">Inviting an address that already has a pending invitation replaces it: the new link works and the old one stops. That is also how a lapsed invitation is replaced &mdash; there is deliberately no way to extend one, renew an expired one, or force one to expire, because an administrator cannot see the link they would be extending.</p>
   <form method="post" action="/admin/invitations">
     <label for="email">Email address</label>
-    <input id="email" type="email" name="email" required>
+    {{- /* type="text" with inputmode="email", not type="email" (invariant 23).
+           The pair type="email" + name="email" is the exact signature a password
+           manager reads as "your username", and this box holds the address of
+           somebody who does not have an account yet -- the one value it can
+           never usefully carry is the address of the person typing. inputmode
+           keeps the "@" on a phone keyboard; domain.ValidateEmail is the check,
+           as it always was, because a check in the browser is not a check. */ -}}
+    <input id="email" type="text" inputmode="email" name="email" required {{noAutofill}}>
     <p><button class="primary" type="submit">Create the invitation</button></p>
   </form>
 </div>

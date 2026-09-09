@@ -2146,7 +2146,31 @@ same condition — a server with a database has both or neither — and it decla
 `GET /{$}` rather than `GET /`, so an unregistered path is still a `404` from
 the mux instead of a dashboard drawn for a typo.
 
-Three things about its shape are decisions rather than details.
+Four things about its shape are decisions rather than details.
+
+**Autocomplete is denied by default and opted into twice** (invariant 23).
+Every form control carries `{{noAutofill}}` — `autocomplete="off"` plus
+1Password's, LastPass's and Dashlane's documented opt-outs — unless it is one of
+the two forms holding the viewer's own credentials, the login form and the
+invitation redemption form, which declare real tokens and say in the template
+why.
+
+This is deliberately more aggressive than the platform intends. `autocomplete`
+is advisory: password managers ignore it by policy, because sites spent years
+using it to break them on purpose, and Chrome overrides it wherever its
+heuristics feel confident. The heuristic keys on `type="email"` with
+`name="email"` — the exact shape of the box that invites somebody, whose one
+impossible value is the address of the person typing, and which 1Password
+covers with a banner that has to be dismissed before anything can be typed at
+all. So the address inputs that are not credentials are `type="text"` with
+`inputmode="email"`: the phone keyboard keeps its `@` and the heuristic loses
+its cue. Nothing is lost by it, because **validation was never the browser's
+job** — `domain.ValidateEmail` is the check and always was, deliberately weak,
+because the strong check is delivery.
+
+A test walks the embedded templates and fails on a control that declares
+neither, which is the half that matters: the policy is not "we fixed the invite
+box", it is "a field added next year cannot quietly arrive undeclared".
 
 **A form may only `GET` or `POST`, so the UI spells with a path what the API
 spells with a method.** `POST .../checkout/cancel` is the API's
