@@ -261,11 +261,11 @@ func TestPublishPinsTheVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if result.Version.Number != pinned {
-		t.Fatalf("the job pinned version %d, want %d", result.Version.Number, pinned)
+	if result.Root().Version.Number != pinned {
+		t.Fatalf("the job pinned version %d, want %d", result.Root().Version.Number, pinned)
 	}
-	if !result.Job.ScheduledFor.Equal(at) {
-		t.Errorf("scheduled for %v, want %v", result.Job.ScheduledFor, at)
+	if !result.Root().Job.ScheduledFor.Equal(at) {
+		t.Errorf("scheduled for %v, want %v", result.Root().Job.ScheduledFor, at)
 	}
 
 	// Nothing has happened yet: the job is in the future.
@@ -304,16 +304,16 @@ func TestPublishPinsTheVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resources: %v", err)
 	}
-	if len(resources) != 1 || resources[0].VersionID != result.Version.ID {
-		t.Errorf("resources = %+v, want one row naming version %d", resources, result.Version.ID)
+	if len(resources) != 1 || resources[0].VersionID != result.Root().Version.ID {
+		t.Errorf("resources = %+v, want one row naming version %d", resources, result.Root().Version.ID)
 	}
 	doc, err := h.Document(t.Context(), h.owner, uid)
 	if err != nil {
 		t.Fatalf("Document: %v", err)
 	}
-	if doc.Document.LiveVersionID != result.Version.ID {
+	if doc.Document.LiveVersionID != result.Root().Version.ID {
 		t.Errorf("live_version_id = %d, want the pinned version %d",
-			doc.Document.LiveVersionID, result.Version.ID)
+			doc.Document.LiveVersionID, result.Root().Version.ID)
 	}
 }
 
@@ -657,7 +657,7 @@ func (h *publishHarness) publishNow(t *testing.T, uid string) PublishResult {
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	job, err := h.Job(t.Context(), h.owner, result.Job.UID)
+	job, err := h.Job(t.Context(), h.owner, result.Root().Job.UID)
 	if err != nil {
 		t.Fatalf("Job: %v", err)
 	}

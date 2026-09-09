@@ -78,6 +78,12 @@ type Problem struct {
 	// members rather than prose.
 	Template string `json:"template"`
 	Line     int    `json:"line"`
+
+	// Refusals name the documents a related-asset cascade would not publish
+	// (PLAN.md M10 acceptance 2). They are extension members for the reason
+	// the two above are: "earl doc publish" prints them as a table, and a
+	// client that had to parse them out of Detail would be parsing prose.
+	Refusals []publicationRefusal `json:"refusals"`
 }
 
 // Error renders a problem the way a person wants to read it: the title, the

@@ -1027,6 +1027,30 @@ type publicationResponse struct {
 		UID  string `json:"uid"`
 		Name string `json:"name"`
 	} `json:"channels"`
+
+	// Related and Refusals are M10's: what the cascade gathered beside the
+	// root, and what it would not publish.
+	Related []struct {
+		UID     string `json:"uid"`
+		Title   string `json:"title"`
+		Version int    `json:"version"`
+		Job     string `json:"job"`
+	} `json:"related"`
+	Refusals []publicationRefusal `json:"refusals"`
+
+	DryRun      bool `json:"dry_run"`
+	WouldRefuse bool `json:"would_refuse"`
+}
+
+// publicationRefusal is one document the cascade will not publish. It is the
+// same shape on a 200, a 202, and the 409 a refused cascade produces, which is
+// what lets one printer serve all three.
+type publicationRefusal struct {
+	UID          string `json:"uid"`
+	Title        string `json:"title"`
+	ReferencedBy string `json:"referenced_by"`
+	Reason       string `json:"reason"`
+	Detail       string `json:"detail"`
 }
 
 // newDocPublishCmd is "earl doc publish" (PLAN.md M9).
@@ -1046,6 +1070,7 @@ func newDocPublishCmd() *cobra.Command {
 		asJSON   bool
 		at       string
 		channels []string
+		dryRun   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "publish UID",
@@ -1054,7 +1079,14 @@ func newDocPublishCmd() *cobra.Command {
 			"The version is pinned now, when the request is made, and never resolved\n" +
 			"at the scheduled hour: version 5 approved for midnight is what appears\n" +
 			"at midnight, whatever the draft has become. Without --channel the\n" +
-			"document is published to every output channel of its site.",
+			"document is published to every output channel of its site.\n\n" +
+			"Publishing a document publishes the documents it references, each with\n" +
+			"its own pinned version. A referenced document that cannot be published\n" +
+			"-- you may not, its workflow does not call its state publishable,\n" +
+			"somebody has it checked out, or it has never been checked in -- is\n" +
+			"refused by name. Whether that stops the whole publish is the server's\n" +
+			"publish.related_failure setting. Use --dry-run to see the set and the\n" +
+			"refusals without scheduling anything.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := docClient(cmd, server)
@@ -1069,8 +1101,20 @@ func newDocPublishCmd() *cobra.Command {
 			if len(channels) > 0 {
 				body["channels"] = channels
 			}
+			if dryRun {
+				body["dry_run"] = true
+			}
 			var out publicationResponse
 			if err := client.Do(cmd.Context(), http.MethodPost, docPath(args[0])+"/publications", body, &out); err != nil {
+				// A cascade refused under publish.related_failure = fail is a
+				// 409 whose problem document names every document that held
+				// it up. The message already spells them out; the table is
+				// printed as well because a list of five is a list somebody
+				// reads down a column rather than out of a sentence.
+				var problem *Problem
+				if errors.As(err, &problem) && len(problem.Refusals) > 0 {
+					printRefusals(cmd.ErrOrStderr(), problem.Refusals)
+				}
 				return err
 			}
 
@@ -1078,11 +1122,47 @@ func newDocPublishCmd() *cobra.Command {
 			if asJSON {
 				return writeJSON(w, out)
 			}
-			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "DOCUMENT\tVERSION\tJOB\tSCHEDULED FOR")
-			fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n",
-				out.UID, out.Version, out.Job, out.ScheduledFor.UTC().Format(time.RFC3339))
-			return tw.Flush()
+
+			if out.DryRun {
+				fmt.Fprintln(w, "dry run: nothing was scheduled")
+			}
+			if !out.WouldRefuse {
+				tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(tw, "DOCUMENT\tVERSION\tJOB\tSCHEDULED FOR")
+				fmt.Fprintf(tw, "%s\t%d\t%s\t%s\n",
+					out.UID, out.Version, out.Job, out.ScheduledFor.UTC().Format(time.RFC3339))
+				if err := tw.Flush(); err != nil {
+					return err
+				}
+			}
+
+			// The related documents get a table of their own rather than more
+			// rows in the one above. They are a different thing -- documents
+			// dragged along by the one that was asked for -- and a row that
+			// had to say so in a column meant for a timestamp would be a
+			// table explaining itself.
+			if len(out.Related) > 0 {
+				fmt.Fprintf(w, "\n%d referenced document(s) publish with it:\n", len(out.Related))
+				tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(tw, "DOCUMENT\tTITLE\tVERSION\tJOB")
+				for _, rel := range out.Related {
+					fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", rel.UID, rel.Title, rel.Version, rel.Job)
+				}
+				if err := tw.Flush(); err != nil {
+					return err
+				}
+			}
+
+			if len(out.Refusals) > 0 {
+				printRefusals(w, out.Refusals)
+			}
+			if out.WouldRefuse {
+				// The dry run of a publish this server would refuse. Said
+				// plainly, because there is no table above it and the absence
+				// of one is not an explanation.
+				fmt.Fprintln(w, "\nthis server's publish.related_failure is \"fail\", so nothing would be published")
+			}
+			return nil
 		},
 	}
 	addServerFlag(cmd, &server)
@@ -1091,7 +1171,26 @@ func newDocPublishCmd() *cobra.Command {
 		"when to publish: a date, a timestamp, or a duration from now; the default is now")
 	cmd.Flags().StringSliceVar(&channels, "channel", nil,
 		"an output channel's uid; repeatable, and the default is every channel of the site")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
+		"report the documents this publish would gather and the ones it would refuse, and schedule nothing")
 	return cmd
+}
+
+// printRefusals writes the documents a cascade would not publish
+// (PLAN.md M10 acceptance 2, 4, 5).
+//
+// Each is named, with the document that referenced it and the reason, because
+// a refusal an editor cannot act on is a refusal that gets ignored: "3 related
+// documents could not be published" sends somebody looking through a story one
+// reference at a time.
+func printRefusals(w io.Writer, refusals []publicationRefusal) {
+	fmt.Fprintf(w, "\n%d referenced document(s) will not be published:\n", len(refusals))
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "DOCUMENT\tTITLE\tREFERENCED BY\tREASON\tWHY")
+	for _, r := range refusals {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.UID, r.Title, r.ReferencedBy, r.Reason, r.Detail)
+	}
+	_ = tw.Flush()
 }
 
 // resourcesResponse is what the publisher has written for a document.

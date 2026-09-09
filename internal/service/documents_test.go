@@ -19,10 +19,13 @@ import (
 // (invariant 7, PLAN.md M3 acceptance 6).
 
 // storySchema is the schema the harness's element type declares, and it is
-// the one "cmsdb seed" writes: a body and a deck, neither required. M7
-// validates a check-in against this (PLAN.md M7 acceptance 5), so a fixture
-// declaring no fields would refuse every document these tests check in.
-const storySchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"}]}`
+// the one "cmsdb seed" writes: a body, a deck, and a repeatable list of
+// related documents, none of them required. M7 validates a check-in against
+// this (PLAN.md M7 acceptance 5), so a fixture declaring no fields would
+// refuse every document these tests check in, and M10 reads "related" to find
+// what a publish has to publish beside the root.
+const storySchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"},` +
+	`{"name":"related","type":"document","repeatable":true}]}`
 
 // elementType gives the harness the element type every document needs.
 func (h *harness) elementType(t *testing.T, keyName, kind string) domain.ElementType {

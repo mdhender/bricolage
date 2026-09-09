@@ -66,15 +66,23 @@ const (
 // nothing read it; a starting point that refuses the first thing anybody does
 // is not.
 //
-// Neither field is required, deliberately. "cmsdb seed" produces a system
-// somebody is about to explore, and a required field turns "earl doc create
-// --title X" followed by a check-in into a refusal before they have seen
-// anything work. An installation that wants one says so with
-// "earl element-type update".
+// No field is required, deliberately. "cmsdb seed" produces a system somebody
+// is about to explore, and a required field turns "earl doc create --title X"
+// followed by a check-in into a refusal before they have seen anything work.
+// An installation that wants one says so with "earl element-type update".
+//
+// The third field is M10's. "related" is a repeatable document field, which is
+// what the related-asset cascade reads: publishing a story publishes the
+// stories it names, each with its own pinned version (DESIGN.md 8.2). It is
+// seeded rather than left for an administrator for the same reason "body" is
+// -- an element type declaring no document field declares that a story cannot
+// reference one, and a starting point where the milestone's own feature is
+// unreachable is not a starting point.
 const (
 	DefaultElementTypeKey    = "story"
 	DefaultElementTypeName   = "Story"
-	DefaultElementTypeSchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"}]}`
+	DefaultElementTypeSchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"},` +
+		`{"name":"related","type":"document","repeatable":true}]}`
 )
 
 // seedRole is one role and the single grant it carries.

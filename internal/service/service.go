@@ -67,6 +67,12 @@ type Service struct {
 	renderer *render.Engine
 	preview  *render.Scratch
 
+	// relatedFailure is what a publish does when a document it would have to
+	// publish cannot be (PLAN.md M10). It is configuration and not schema
+	// (DESIGN.md 8.2, 14), and it is held rather than read per call for the
+	// reason the queue definitions are: one process, one answer.
+	relatedFailure config.RelatedFailure
+
 	// publisher renders to the output tree and remembers what it wrote
 	// (PLAN.md M9). It is nil on a server started without --output or
 	// without --templates, which is a supported configuration: M0 through M8
@@ -120,6 +126,10 @@ type Options struct {
 	// publishes nothing. It is built by main, over a directory that must
 	// already exist, for the reason the other two are.
 	Publisher *publish.Publisher
+
+	// RelatedFailure is the related-asset cascade's policy; the empty string
+	// means config.DefaultRelatedFailure, which is "fail" (DESIGN.md 8.2).
+	RelatedFailure config.RelatedFailure
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -145,6 +155,8 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		renderer:   opts.Renderer,
 		preview:    opts.Preview,
 		publisher:  opts.Publisher,
+
+		relatedFailure: opts.RelatedFailure,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -161,6 +173,16 @@ func New(db *store.DB, opts Options) (*Service, error) {
 	if s.queues.IsEmpty() {
 		s.queues = config.DefaultQueues()
 	}
+	// An unrecognised policy is refused rather than defaulted, because a
+	// service silently reading a misspelled "warn" as "fail" is a
+	// configuration file that says one thing while the process does another.
+	// The empty string is "not configured" and is the one value that
+	// defaults.
+	policy, err := config.ParseRelatedFailure(string(s.relatedFailure))
+	if err != nil {
+		return nil, fmt.Errorf("service: %w", err)
+	}
+	s.relatedFailure = policy
 
 	engine, err := workflow.New(db, opts.Clock)
 	if err != nil {
@@ -189,3 +211,8 @@ func (s *Service) SessionTTL() time.Duration { return s.sessionTTL }
 
 // LockLease is how long a document's edit lease lasts.
 func (s *Service) LockLease() time.Duration { return s.lockLease }
+
+// RelatedFailure is this service's related-asset cascade policy. It is what
+// the startup banner logs, so that "why did that publish refuse" is a question
+// a log answers.
+func (s *Service) RelatedFailure() config.RelatedFailure { return s.relatedFailure }

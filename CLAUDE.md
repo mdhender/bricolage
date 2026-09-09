@@ -108,7 +108,7 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M9 are complete and M10 has not started. `cmsdb` can `init`,
+M0 through M10 are complete and M11 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
@@ -117,12 +117,13 @@ history, transition, workflow, assignment, due-date, queue, job, site,
 category, output-channel, element-type, filing, URI, preview, publication, and
 resource routes plus `/healthz` and the `/preview/` mount. It also hosts the
 background job workers, behind `--workers N` (default 1, `0` to disable), and
-takes the optional `--templates DIR`, `--preview DIR`, and `--output DIR`.
+takes the optional `--templates DIR`, `--preview DIR`, `--output DIR`, and
+`--related-failure fail|warn`.
 `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
 `admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish|resources`.
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources`.
 
 The schema is ten migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
@@ -223,6 +224,39 @@ path is validated by `domain.OutputPath` and every write goes through an
 file and nowhere else, an `os.Root` method included. `cmsdb check --output DIR`
 reconciles the tree with `published_resources` and reports the two opposite
 orphans separately.
+
+Publishing a document publishes the documents it references. A `document`
+field type in `element_types.schema` is how content says what it references —
+declared rather than guessed, because a scan for anything uid-shaped would
+publish a story somebody quoted a uid in — and `domain.References` reads those
+fields from the version a publish would pin, never from the working draft.
+`publish.Gather` is a pure function over a loaded graph, exactly as
+`DESIGN.md` §8.2 asks, and it is all six of that section's bullets in one
+place: cycle-safe by a `seen` set, permission-checked per node, state-gated,
+lock-gated, reviewable, and reporting rather than deciding. `publish.LoadGraph`
+is the half that reads and it decides nothing — it follows references from
+documents `Gather` is about to refuse, because a refusal has to name a document
+and naming it means having loaded it.
+
+**The cascade is gathered when a publish is scheduled, not when it runs**, and
+`internal/service` enqueues one publish job per gathered document, each pinning
+that document's own newest checked-in version (invariant 8). A cascade resolved
+at midnight would be checking the privileges of somebody who went home.
+`--dry-run` is the same code path with the enqueue and the events left out,
+which is what lets it claim to say what a real publish would do; it answers 200
+rather than 202. `Gather` deliberately does not gate the root: the service has
+already resolved `Publish` and the publishable state with messages that name
+the privilege and the workflow, and the lock never applies to the root at all —
+publishing a document somebody has checked out publishes its newest checked-in
+version, which is how a correction goes out while the next edition is written.
+
+`publish.related_failure` (`cmsd --related-failure`) is `fail` or `warn` and
+defaults to `fail`; a misspelled value is refused at startup. Under `fail` a
+single refusal publishes nothing at all, not even the root. A refusal names the
+document by uid and title, the document that referenced it, and one of
+`missing`, `permission`, `state`, `checked_out`, `no_version`; a refused
+cascade is a `*domain.RelatedError` answering to `ErrConflict`, so a 409
+carrying the list as a problem-document extension member.
 
 Publishing from a transition is `EffectPublish`, the fifth effect, and it comes
 paired with `GuardHasCheckedInVersion`, the eighth guard.

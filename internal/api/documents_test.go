@@ -17,11 +17,13 @@ import (
 // document shape: the refusals themselves are asserted in internal/service,
 // where the rows written can be counted.
 
-// storySchema is the schema "cmsdb seed" writes: a body and a deck, neither
-// required. A check-in is validated against it as of M7 (PLAN.md M7
-// acceptance 5), so a fixture declaring no fields would refuse every document
-// these tests check in.
-const storySchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"}]}`
+// storySchema is the schema "cmsdb seed" writes: a body, a deck, and a
+// repeatable list of related documents, none of them required. A check-in is
+// validated against it as of M7 (PLAN.md M7 acceptance 5), so a fixture
+// declaring no fields would refuse every document these tests check in, and
+// M10's cascade reads "related" to find what a publish drags along.
+const storySchema = `{"fields":[{"name":"body","type":"block"},{"name":"deck","type":"text"},` +
+	`{"name":"related","type":"document","repeatable":true}]}`
 
 // docHarness is the API harness with one element type, and the site every
 // document is created on.

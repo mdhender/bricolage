@@ -31,6 +31,21 @@
 // of invariant 19 it keeps: the root must already exist, and only the
 // computed interior beneath it is made.
 //
-// Permitted imports: internal/domain, internal/store, internal/render,
-// internal/jobs, internal/clock, internal/events, internal/ids.
+// M10 adds the related-asset cascade (DESIGN.md 8.2). Publishing a document
+// publishes the documents it references, and the traversal that decides which
+// ones is a pure function over a loaded graph -- gather.go -- so that cycle
+// safety, the per-node permission check, the state gate and the lock gate can
+// all be tested without a database. graph.go is the half that reads. What to
+// do about a refusal is not decided here: Gather reports, and
+// config.RelatedFailure, resolved by internal/service, decides.
+//
+// Permitted imports: internal/domain, internal/authz, internal/store,
+// internal/render, internal/jobs, internal/clock, internal/events,
+// internal/ids.
+//
+// internal/authz arrived with the cascade and is the reason to say so: the
+// per-node permission check is authz.Allows over each related document's
+// subject, which is the same pure resolver internal/service asks about the
+// root. A predicate passed in by the caller would have hidden the one rule
+// DESIGN.md 8.2 is most emphatic about behind a function pointer.
 package publish

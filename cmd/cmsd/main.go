@@ -104,6 +104,16 @@ type flags struct {
 	// anybody. internal/publish/tree.go says why the exception stops exactly
 	// there.
 	output string
+
+	// relatedFailure is what a publish does when a document it would have to
+	// publish cannot be (PLAN.md M10, DESIGN.md 8.2). "fail" publishes
+	// nothing, "warn" publishes what it can and reports the rest.
+	//
+	// It is a flag here because there is no config file reader yet;
+	// DESIGN.md 8.2 spells it "publish.related_failure" and that is what
+	// config.ParseRelatedFailure's refusal names, so the key and the flag say
+	// the same words when the file arrives.
+	relatedFailure string
 }
 
 func newRootCmd() *cobra.Command {
@@ -202,18 +212,28 @@ func newServeCmd(f *flags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// The cascade's policy, parsed before anything is logged about
+			// publishing so that a misspelled word is a refusal while the
+			// process is starting rather than the first time somebody
+			// publishes a story with a related one.
+			relatedFailure, err := config.ParseRelatedFailure(f.relatedFailure)
+			if err != nil {
+				return err
+			}
 			if publisher == nil {
 				settings.log.Info("publishing disabled; --output and --templates are both needed")
 			} else {
-				settings.log.Info("publishing", "output", tree.Dir())
+				settings.log.Info("publishing",
+					"output", tree.Dir(), "related_failure", relatedFailure)
 			}
 
 			svc, err := service.New(db, service.Options{
-				Clock:     clock.Real{},
-				Logger:    settings.log,
-				Renderer:  renderer,
-				Preview:   previews,
-				Publisher: publisher,
+				Clock:          clock.Real{},
+				Logger:         settings.log,
+				Renderer:       renderer,
+				Preview:        previews,
+				Publisher:      publisher,
+				RelatedFailure: relatedFailure,
 			})
 			if err != nil {
 				return err
@@ -276,6 +296,8 @@ func newServeCmd(f *flags) *cobra.Command {
 		"directory previews are written to; it must already exist, and without it this server serves none")
 	cmd.Flags().StringVar(&f.output, "output", "",
 		"directory published files are written beneath; it must already exist, and without it this server publishes nothing")
+	cmd.Flags().StringVar(&f.relatedFailure, "related-failure", string(config.DefaultRelatedFailure),
+		"what a publish does when a document it references cannot be published: fail or warn")
 	return cmd
 }
 

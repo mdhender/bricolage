@@ -37,11 +37,25 @@ const (
 	FieldBool  = "bool"
 	FieldDate  = "date" // a date this system can parse
 	FieldURL   = "url"
+
+	// FieldDocument is a reference to another document, written as that
+	// document's uid (invariant 10). It is the field the related-asset
+	// cascade reads: publishing a document publishes the documents its
+	// content names, and the only way a traversal can know what they are is
+	// for the schema to declare which fields hold one (DESIGN.md 8.2,
+	// PLAN.md M10).
+	//
+	// It is a declared type rather than a convention over "url" or a scan of
+	// the whole content tree for anything uid-shaped. A cascade that guessed
+	// would publish a document because somebody quoted a uid in a paragraph,
+	// and one that scanned only "url" fields could not tell an internal
+	// reference from a link to somebody else's site.
+	FieldDocument = "document"
 )
 
 // FieldTypes are the declarable types, in a stable order for the CLI and the
 // admin screens.
-var FieldTypes = []string{FieldText, FieldBlock, FieldInt, FieldBool, FieldDate, FieldURL}
+var FieldTypes = []string{FieldText, FieldBlock, FieldInt, FieldBool, FieldDate, FieldURL, FieldDocument}
 
 // ValidFieldType reports whether s is one of them.
 func ValidFieldType(s string) bool {
@@ -326,6 +340,21 @@ func checkValue(fieldType string, raw json.RawMessage) (string, bool) {
 		}
 		if s != "" && !strings.Contains(s, "://") && !strings.HasPrefix(s, "/") {
 			return "must be an absolute URL or a path beginning with /", false
+		}
+	case FieldDocument:
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "must be a document uid written as a string", false
+		}
+		// Whether a document by that uid exists is not asked here. domain
+		// performs no I/O (invariant 1), and the answer belongs to the
+		// moment of the publish rather than to the moment of the check-in:
+		// a related story deleted after this version was written is a
+		// refusal the cascade names by uid (PLAN.md M10 acceptance 2), not
+		// a version that retroactively becomes invalid. What is refused
+		// here is a value no lookup could ever be made from.
+		if strings.TrimSpace(s) != s || strings.ContainsAny(s, " \t\n/") {
+			return "must be a document uid, with no spaces or slashes in it", false
 		}
 	}
 	return "", true

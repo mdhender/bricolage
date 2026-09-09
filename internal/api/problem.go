@@ -46,6 +46,13 @@ type Problem struct {
 	// did (PLAN.md M8 acceptance 5).
 	Template string `json:"template,omitempty"`
 	Line     int    `json:"line,omitempty"`
+
+	// Refusals name the documents a related-asset cascade would not publish,
+	// when one refused (PLAN.md M10 acceptance 2). They are an extension
+	// member rather than prose in "detail" for the reason "guard" is: a
+	// client showing an editor which stories are holding the publish up has
+	// to be able to list them without parsing a sentence.
+	Refusals []publicationRefusal `json:"refusals,omitempty"`
 }
 
 // FieldError is one invalid field in a 422.
@@ -142,6 +149,14 @@ func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) 
 	if te, ok := domain.TemplateErrorOf(err); ok {
 		p.Template = te.Template
 		p.Line = te.Line
+	}
+
+	// A refused cascade names every document it would have had to publish and
+	// could not. Filled in here for the same reason as the three above: this
+	// is the one function that turns an error into a response, and a second
+	// place that knew about refusals would be a second place to forget.
+	if refusals, ok := domain.RefusalsOf(err); ok {
+		p.Refusals = newPublicationRefusals(refusals)
 	}
 
 	switch {

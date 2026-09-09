@@ -362,8 +362,11 @@ CREATE TABLE element_types (
 ```
 
 `element_types.schema` declares fields (name, type, repeatable, required,
-allowed child element types). `document_versions.content` holds a tree that must
-validate against it. Validation is a pure function in `domain`:
+allowed child element types). The declarable types are `text`, `block`, `int`,
+`bool`, `date`, `url`, and — from M10 — `document`, whose value is another
+document's `uid` and which is what the related-asset cascade reads (§8.2).
+`document_versions.content` holds a tree that must validate against it.
+Validation is a pure function in `domain`:
 
 ```go
 func ValidateContent(et *ElementType, content string) error   // a *ContentError, carrying []FieldError
@@ -936,6 +939,63 @@ be:
 Every one of those bullets is a lesson someone learned in production. Implement
 the traversal as a pure function over a loaded graph so it can be tested without
 a database.
+
+**A reference is a declared field, not a guess.** `element_types.schema` gains a
+`document` field type (§5.2) whose value is another document's `uid`, and
+`domain.References` reads the declared fields of a checked-in version's content.
+Scanning the whole content tree for anything uid-shaped would publish a document
+because somebody quoted a uid in a paragraph, and reading `url` fields could not
+tell an internal reference from a link to somebody else's site. `cmsdb seed`
+declares `related` on the story type, repeatable, so the feature is reachable
+from a fresh database rather than waiting on an administrator.
+
+**References are read from the version a publish would pin**, never from the
+working draft. That is invariant 8 applied to the reference list: a relative
+added to the draft this morning is not published tonight, for the same reason a
+body edited in the draft is not.
+
+**The cascade is gathered when a publish is scheduled, not when it runs.** The
+"reviewable" bullet says so — the set is returned to the caller *before anything
+is scheduled* — and the per-node permission check is a question about the person
+making the request. A cascade resolved at midnight would be checking the
+privileges of somebody who went home, against documents that have since moved,
+and would have nobody to refuse to. So `internal/service` loads the graph,
+gathers, applies the policy, and enqueues **one publish job per gathered
+document, each pinning that document's own newest checked-in version**.
+`--dry-run` is the same code path with the enqueue and the events left out,
+which is what lets it claim to say what a real publish would do.
+
+The one asymmetry worth writing down: **`Gather` does not gate the root.**
+`internal/service` has already resolved `PUBLISH` over it and refused a state
+the workflow does not call publishable, with messages that name the privilege
+and the workflow; re-deciding it inside the traversal would be a second
+statement of one rule. The lock never applies to the root at all — publishing a
+document somebody has checked out publishes its newest checked-in version, which
+is how a correction goes out while the next edition is being written — and it
+always applies to a relative, because nobody asked for that one.
+
+`publish.related_failure` defaults to `fail`, the same fail-safe direction the
+environment default takes (§14). A misspelled value is refused at startup rather
+than read as the default, because a config file saying one thing while the
+system does another is invariant 6's failure in a smaller costume. Under `fail`
+a single refusal publishes nothing at all, not even the root: a page that goes
+live linking to a document that did not is the failure the setting exists to
+prevent. Under `warn` the root and everything gatherable publish, and the
+refusals are reported — in the response, in the root's
+`document.publish_scheduled` payload, and in the log, because "why is that page
+still the old one" is asked the morning after.
+
+A refusal is a `domain.Refusal` and names the document by `uid` and title, the
+document that referenced it, and one of a closed set of reasons — `missing`,
+`permission`, `state`, `checked_out`, `no_version`. A refused cascade is a
+`*domain.RelatedError`, which answers to `ErrConflict` and so becomes a `409`
+through the one mapping function at the transport edge, carrying every refusal
+as a problem-document extension member. A conflict rather than a forbidden even
+when the reason is a privilege: the statement is about the set of documents this
+publish would have to touch, not about whether the caller may publish the one
+they asked for — they may, which is why the request got that far. "3 related
+documents could not be published" is what the system we learned from said, and
+it is a sentence nobody can act on.
 
 ### 8.3 Resources and stale expiry
 
@@ -1580,9 +1640,8 @@ earl doc approve     UID
 earl doc comment     UID [--reply-to ID] BODY
 earl doc events      UID
 earl doc preview     UID [--channel C] [--validate] [--url]
-earl doc publish     UID [--at WHEN] [--channel C]...
+earl doc publish     UID [--at WHEN] [--channel C]... [--dry-run]
 earl doc resources   UID                            what is at this document's addresses
-earl publish         UID [--dry-run]                the related-asset set (§8.2, M10)
 earl queue           SLUG
 earl job list        [--failed] [--pending] [--kind K] [--limit N]
 earl job retry       UID
@@ -1601,10 +1660,13 @@ what a person types — a date, a timestamp, or a duration — which is the same
 grammar `earl doc due --at` takes, so `48h` cannot mean two things in one
 system.
 
-`earl publish --dry-run` returns the related-asset set that *would* be
-published, with each refusal and its reason. That is the CLI face of §8.2 and
-it arrives with M10; the cascade is what makes a command about more than one
-document worth having.
+`earl doc publish --dry-run` returns the related-asset set that *would* be
+published, with each refusal and its reason, and schedules nothing. That is the
+CLI face of §8.2 and it arrives with M10; the cascade is what makes a command
+about more than one document worth having. An earlier draft of this list gave it
+a top-level `earl publish` of its own, which was the same mistake the two lines
+above correct: a dry run is a question about one document's neighbourhood, and
+the neighbourhood is reached from the document.
 
 ## 12. HTTP API
 
@@ -1781,7 +1843,13 @@ publishable — a `409`, because that is a statement about the document rather
 than about the person. `GET .../resources` needs only `read`: what is at a
 document's addresses is part of the document, in the same way its history is.
 `dry_run` arrives with the related-asset cascade in M10, which is the milestone
-that gives it something to say.
+that gives it something to say. It answers **200**, not 202: nothing at all was
+accepted for processing, and the answer is a report that is complete when it is
+read. Both statuses carry `related` — the documents the cascade gathered beside
+the root, each with the version it pinned — and `refusals`, which names the ones
+that will not be published and why. A cascade refused under
+`publish.related_failure = fail` is a `409` whose problem document carries the
+same `refusals` list, so a client parses one shape whichever answer it gets.
 
 Requests carry `Idempotency-Key` on `POST`s that create jobs; store the key with
 the created resource and return the same result on replay.
@@ -2061,6 +2129,10 @@ server.workers          1
 server.timeout          0                      graceful shutdown after this; 0 = never
 
 queues                  the built-in set       saved queue definitions; see below
+
+publish.related_failure fail                   what a publish does when a document
+                                               it references cannot be published;
+                                               fail or warn (§8.2)
 ```
 
 **Saved queues are configuration, not schema.** A queue is a named question
