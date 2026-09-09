@@ -51,6 +51,19 @@ cms.mdhenderson.com {
 
 	encode zstd gzip
 
+	# The log directory must exist and belong to the caddy user before this
+	# config is loaded -- the packaged unit runs as User=caddy, and Caddy
+	# creates the log file but not the directory holding it:
+	#
+	#     sudo install -d -o caddy -g caddy /var/log/caddy
+	#
+	# And do not run `caddy validate` on this file as root. Validation loads
+	# the config, which opens the log writer, which creates
+	# cms.access.log owned by root:root 0600 -- after which the service fails
+	# to start with "permission denied" on a file that plainly exists, in a
+	# directory the caddy user can plainly write. If that has already happened:
+	#
+	#     sudo chown -R caddy:caddy /var/log/caddy
 	log {
 		output file /var/log/caddy/cms.access.log {
 			roll_size 10MiB

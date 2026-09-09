@@ -135,11 +135,13 @@ of the cost of the change.
 Ship them:
 
 ```sh
-rsync -av --chmod=F755 deploy/linux/amd64/ cms:/opt/cms/bin/
+rsync -av deploy/linux/amd64/ cms:/opt/cms/bin/
 ```
 
 `cms` is a `~/.ssh/config` host alias for the droplet — see `PROVISIONING.md`,
-step 1. Then restart the service: "Deploying a new version" below has the order,
+step 1. There is deliberately no `--chmod=F755`: recent macOS ships openrsync,
+which rejects it, and `make release` already leaves the binaries `755` for
+`rsync -a` to preserve. Then restart the service: "Deploying a new version" below has the order,
 which is not simply `systemctl restart`. `deploy/linux/` is build output and is
 not committed.
 
@@ -160,7 +162,7 @@ The first deploy is `PROVISIONING.md`. Every one after it is this:
 ```sh
 make check
 make release
-rsync -av --chmod=F755 deploy/linux/amd64/ cms:/opt/cms/bin/
+rsync -av deploy/linux/amd64/ cms:/opt/cms/bin/
 rsync -av --exclude=linux/ deploy/ cms:/opt/cms/deploy/
 ```
 

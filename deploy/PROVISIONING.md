@@ -14,7 +14,7 @@ there because the application deliberately refuses to do it for you.
 
 ## 1. The droplet
 
-Ubuntu 24.04 LTS. The smallest shared-CPU droplet is enough to begin with:
+Ubuntu 26.04 LTS. The smallest shared-CPU droplet is enough to begin with:
 the database is SQLite, the binaries are static, and there is no runtime to
 host. What will grow first is disk, because the output tree and the preview
 tree are both files on it; give it room or attach a volume later.
@@ -100,7 +100,7 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 ```
 
-Ubuntu 24.04 ships drop-ins under `/etc/ssh/sshd_config.d/` that can override
+Ubuntu 26.04 ships drop-ins under `/etc/ssh/sshd_config.d/` that can override
 that file, and the cloud image usually leaves one there. Check for it rather
 than assuming, then reload:
 
@@ -172,9 +172,22 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
   | sudo tee /etc/apt/sources.list.d/caddy-stable.list
 sudo apt update && sudo apt install -y caddy
 
+sudo install -d -o caddy -g caddy /var/log/caddy
 sudo install -m 644 /opt/cms/deploy/Caddyfile.prod /etc/caddy/Caddyfile
-sudo systemctl reload caddy
+sudo systemctl restart caddy
 ```
+
+The `install -d` is not optional. Caddy creates the log *file* but not the
+directory above it, and the packaged unit runs as `User=caddy` under
+`ProtectSystem=full`. Nor should you run `caddy validate` on that config as
+root: validation loads the config, which opens the log writer, which leaves
+`cms.access.log` owned by `root:root` mode `0600` — and the service then fails
+to start with `permission denied` on a file that exists, in a directory the
+`caddy` user can write. `sudo chown -R caddy:caddy /var/log/caddy` undoes it.
+
+The Ubuntu archive has Caddy 2.6.2; the Cloudsmith repository above installs
+2.11.4. Take the newer one — this is the component holding your certificate
+lifecycle.
 
 For nginx instead, follow the header comment in `deploy/nginx.conf`: install
 `nginx` and `certbot`, put the file in `sites-available`, issue the certificate
@@ -206,8 +219,13 @@ is `zombiezen.com/go/sqlite`, which is pure Go:
 ```sh
 make check
 make release          # -tags production, into deploy/linux/amd64/
-rsync -av --chmod=F755 deploy/linux/amd64/ cms:/opt/cms/bin/
+rsync -av deploy/linux/amd64/ cms:/opt/cms/bin/
 ```
+
+No `--chmod` here. Recent macOS ships openrsync, which reports itself as
+"rsync version 2.6.9 compatible" and rejects `--chmod=F755` as an invalid
+argument. It is not needed: `make release` leaves the binaries `755` and
+`rsync -a` preserves that.
 
 Ship the deploy directory too, so the unit and proxy config on the droplet are
 diffable against the originals:
@@ -234,17 +252,42 @@ touches the schema:
 ```sh
 export CMS_ENV=production        # for this shell only, and only for these commands
 /opt/cms/bin/cmsdb init --db /opt/cms/var
+/opt/cms/bin/cmsdb seed --db /opt/cms/var
 /opt/cms/bin/cmsdb bootstrap admin --db /opt/cms/var \
     --email you@example.com --name "Your Name"
-/opt/cms/bin/cmsdb seed --db /opt/cms/var
 ```
+
+**`seed` comes before `bootstrap admin`, and the order is not cosmetic.** The
+`admin` role is one of the things `seed` writes, and `bootstrap admin` assigns
+it to the user it creates. Run them the other way round and the note it prints
+is easy to miss:
+
+```
+note: there is no "admin" role yet, so no role was assigned; run "cmsdb seed" and try again
+```
+
+"Try again" is not advice that works. `bootstrap admin` is idempotent by
+refusing — a second run with the same email exits non-zero with *a user with
+that email already exists; nothing was changed* — so the role is never
+assigned, and you are left with an administrator who cannot administer
+anything. On a database this fresh the fix is to delete `cms.db` and its `-wal`
+and `-shm` and start the three commands over; on one with content in it, it is
+a role assignment somebody has to write by hand.
 
 `bootstrap admin` prints a generated password **once**, to stdout. Capture it
 now; there is no second chance and no flag that would let you pass one in
 (arguments are visible in `ps` and land in shell history). `seed` writes the
-roles, the site, and the element types — not the workflow, which migration
-0005 seeds, because `documents.workflow_id` is `NOT NULL` and no document row
-may exist before a workflow does.
+roles, the site, the root category, an output channel, and the element types —
+not the workflow, which migration 0005 seeds, because `documents.workflow_id`
+is `NOT NULL` and no document row may exist before a workflow does.
+
+The site `seed` writes is `htmx-app.localhost`, which is the development public
+origin and wrong on any real server. That name is also the first path segment
+of the template tree — `<templates>/<site domain>/<category path>/<element
+type>.gohtml` — so until it can be changed, a deployment must either lay its
+templates out under a directory named `htmx-app.localhost/` or rewrite the row
+with hand-written SQL. Neither is good and both are temporary: see issue #3.
+Expect to settle it before anything renders or publishes.
 
 Do not leave `CMS_ENV` exported in a shell profile. The unit sets it, and that
 is the only place it should live.
