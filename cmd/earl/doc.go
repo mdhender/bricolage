@@ -32,6 +32,10 @@ type documentResponse struct {
 	State          string     `json:"state"`
 	CheckedOutName string     `json:"checked_out_by_name"`
 	LockExpiresAt  *time.Time `json:"lock_expires_at"`
+	AssignedTo     string     `json:"assigned_to"`
+	AssignedToName string     `json:"assigned_to_name"`
+	DueAt          *time.Time `json:"due_at"`
+	Overdue        bool       `json:"overdue"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	Version        *struct {
@@ -67,6 +71,8 @@ func newDocCmd() *cobra.Command {
 		newDocEventsCmd(),
 		newDocTransitionsCmd(),
 		newDocDoCmd(),
+		newDocAssignCmd(),
+		newDocDueCmd(),
 	)
 	return cmd
 }
@@ -217,28 +223,39 @@ func newDocShowCmd() *cobra.Command {
 	return cmd
 }
 
+// newDocListCmd is the queue query at the command line (PLAN.md M5
+// acceptance 1).
+//
+// "--state review --unassigned" is the question the system we learned from
+// could not express at all, because "unassigned" was not something it could
+// name. Here it is two flags and one indexed query.
 func newDocListCmd() *cobra.Command {
 	var (
 		server string
 		asJSON bool
-		limit  int
+		f      docListFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List the documents you may read",
 		Long: "List the documents you may read.\n\n" +
-			"The queue filters -- by state, by assignee, unassigned, overdue -- arrive\n" +
-			"with the queues in M5, together with the workflow state they filter on.",
+			"The filters combine: \"--state review --unassigned\" is everything waiting\n" +
+			"on an editor that nobody has picked up. --assignee takes a user uid or\n" +
+			"\"me\"; --overdue is measured against the server's clock, not yours.\n\n" +
+			"\"earl queue\" runs the combinations somebody has already named.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			client, err := docClient(cmd, server)
 			if err != nil {
 				return err
 			}
+			if f.unassigned && cmd.Flags().Changed("assignee") {
+				return fmt.Errorf("a document is assigned to somebody or to nobody, not both")
+			}
 			var out struct {
 				Documents []documentResponse `json:"documents"`
 			}
-			if err := client.Get(cmd.Context(), fmt.Sprintf("/api/v1/documents?limit=%d", limit), &out); err != nil {
+			if err := client.Get(cmd.Context(), listQuery(cmd, f), &out); err != nil {
 				return err
 			}
 
@@ -246,26 +263,17 @@ func newDocListCmd() *cobra.Command {
 			if asJSON {
 				return writeJSON(w, out)
 			}
-			if len(out.Documents) == 0 {
-				fmt.Fprintln(w, "no documents")
-				return nil
-			}
-			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "UID\tKIND\tTYPE\tSTATE\tCHECKED OUT BY\tUPDATED")
-			for _, d := range out.Documents {
-				held := "-"
-				if d.CheckedOutBy != "" {
-					held = d.CheckedOutName
-				}
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-					d.UID, d.Kind, d.ElementType, d.State, held, d.UpdatedAt.Format(time.RFC3339))
-			}
-			return tw.Flush()
+			return printDocTable(w, out.Documents)
 		},
 	}
 	addServerFlag(cmd, &server)
 	addJSONFlag(cmd, &asJSON)
-	cmd.Flags().IntVar(&limit, "limit", 100, "how many documents to list")
+	cmd.Flags().StringVar(&f.state, "state", "", "only documents in this workflow state")
+	cmd.Flags().StringVar(&f.assignee, "assignee", "", `only documents assigned to this user uid, or "me"`)
+	cmd.Flags().Int64Var(&f.site, "site", 0, "only documents on this site")
+	cmd.Flags().BoolVar(&f.unassigned, "unassigned", false, "only documents nobody has been given")
+	cmd.Flags().BoolVar(&f.overdue, "overdue", false, "only documents past their due date")
+	cmd.Flags().IntVar(&f.limit, "limit", 100, "how many documents to list")
 	return cmd
 }
 
@@ -578,6 +586,18 @@ func printDoc(w io.Writer, doc documentResponse, asJSON bool, verb string) error
 		}
 	} else {
 		fmt.Fprintf(tw, "checked out by\t(nobody)\n")
+	}
+	if doc.AssignedTo != "" {
+		fmt.Fprintf(tw, "assigned to\t%s\n", doc.AssignedToName)
+	} else {
+		fmt.Fprintf(tw, "assigned to\t(nobody)\n")
+	}
+	if doc.DueAt != nil {
+		due := doc.DueAt.Format(time.RFC3339)
+		if doc.Overdue {
+			due += " (overdue)"
+		}
+		fmt.Fprintf(tw, "due\t%s\n", due)
 	}
 	if v := doc.Version; v != nil {
 		state := fmt.Sprintf("%d (checked in %s)", v.Version, formatCheckedIn(v.CheckedInAt))

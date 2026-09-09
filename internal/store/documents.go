@@ -337,35 +337,11 @@ func documentByID(conn *sqlite.Conn, id int64, d *domain.Document) error {
 		})
 }
 
-// ListDocuments returns every document, newest first.
-//
-// M5 gives this the filters that make it a queue query -- by state, by
-// assignee, unassigned, overdue -- and the index they need. M3 lists, and the
-// caller filters by what the reader may see.
-func (db *DB) ListDocuments(ctx context.Context, limit int) ([]domain.Document, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	var out []domain.Document
-	err := db.Read(ctx, func(conn *sqlite.Conn) error {
-		return run(conn, "listing documents", `
-			SELECT `+documentColumns+`
-			  FROM documents d
-			  JOIN element_types et ON et.id = d.element_type_id
-			 ORDER BY d.id DESC
-			 LIMIT :limit`,
-			func(stmt *sqlite.Stmt) { stmt.SetInt64(":limit", int64(limit)) },
-			func(stmt *sqlite.Stmt) error {
-				d, err := scanDocument(stmt)
-				if err != nil {
-					return err
-				}
-				out = append(out, d)
-				return nil
-			})
-	})
-	return out, err
-}
+// Listing documents is QueryDocuments, in queue.go. M3 had a ListDocuments
+// here that took a limit and nothing else; M5 gave it the filters that make it
+// a queue query, and keeping the unfiltered one alongside would have been two
+// list paths that answer the same question differently. An unfiltered
+// domain.DocumentFilter is the M3 list.
 
 func scanDocument(stmt *sqlite.Stmt) (domain.Document, error) {
 	id := stmt.GetInt64("id")

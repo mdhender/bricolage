@@ -42,6 +42,12 @@ type Service struct {
 	// and the way to be sure of that is to have no other way to try
 	// (invariant 4).
 	engine *workflow.Engine
+
+	// queues are the saved queue definitions (PLAN.md M5). They are
+	// configuration rather than schema: a queue has no identity anybody
+	// refers to and nothing points at one, so naming a few is a config file's
+	// job and not a migration's.
+	queues config.QueueSet
 }
 
 // Options configure a Service. Everything is resolved before New is called;
@@ -66,6 +72,10 @@ type Options struct {
 	// LockLease is how long a document's edit lease lasts; zero means
 	// config.DefaultLockLease.
 	LockLease time.Duration
+
+	// Queues are the saved queue definitions; an empty set means
+	// config.DefaultQueues.
+	Queues config.QueueSet
 }
 
 // DefaultTouchAfter is how stale last_seen_at may get before authentication
@@ -87,6 +97,7 @@ func New(db *store.DB, opts Options) (*Service, error) {
 		sessionTTL: opts.SessionTTL,
 		touchAfter: opts.TouchAfter,
 		lockLease:  opts.LockLease,
+		queues:     opts.Queues,
 	}
 	if s.log == nil {
 		s.log = slog.New(slog.DiscardHandler)
@@ -99,6 +110,9 @@ func New(db *store.DB, opts Options) (*Service, error) {
 	}
 	if s.lockLease <= 0 {
 		s.lockLease = config.DefaultLockLease
+	}
+	if s.queues.IsEmpty() {
+		s.queues = config.DefaultQueues()
 	}
 
 	engine, err := workflow.New(db, opts.Clock)

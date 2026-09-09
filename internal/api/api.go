@@ -63,10 +63,11 @@ func New(deps Deps) *Handler {
 // Register adds the JSON API routes to mux (DESIGN.md 12).
 //
 // M2 registered the session and identity routes and the grant-writing route
-// that carries the anti-escalation check; M3 adds the document, version, diff,
-// and history routes. The workflow and publishing routes arrive with the
-// milestones that implement them; a route registered before its service method
-// exists is a 501 nobody asked for.
+// that carries the anti-escalation check; M3 added the document, version,
+// diff, and history routes, M4 the transitions, and M5 assignment, due dates,
+// and the queues. The publishing routes arrive with the milestones that
+// implement them; a route registered before its service method exists is a
+// 501 nobody asked for.
 func Register(mux Mux, deps Deps) {
 	h := New(deps)
 
@@ -110,6 +111,25 @@ func Register(mux Mux, deps Deps) {
 	handle("GET "+Prefix+"documents/{uid}/events", h.authenticated(h.documentEvents))
 	handle("GET "+Prefix+"documents/{uid}/transitions", h.authenticated(h.listTransitions))
 	handle("POST "+Prefix+"documents/{uid}/transitions", h.authenticated(h.doTransition))
+
+	// Assignment, due dates, and the saved queues (PLAN.md M5). Assignment is
+	// a subresource for the reason transitions are: POST hands the work over,
+	// DELETE takes it back, and there is no PATCH that sets an assignee among
+	// a dozen other fields.
+	//
+	// Two of these are additions to DESIGN.md 12's list. The due-date
+	// subresource is one, because the design put a due date on PATCH
+	// /documents/{uid} and that route writes the working draft and needs the
+	// edit lease -- requiring a checkout to set a deadline would mean taking
+	// the draft away from the person the deadline is for. GET /queues is the
+	// other: the design names only /queues/{slug}, and a client that cannot
+	// ask which queues exist has to be told out of band.
+	handle("POST "+Prefix+"documents/{uid}/assignment", h.authenticated(h.assignDocument))
+	handle("DELETE "+Prefix+"documents/{uid}/assignment", h.authenticated(h.unassignDocument))
+	handle("PUT "+Prefix+"documents/{uid}/due", h.authenticated(h.setDue))
+	handle("DELETE "+Prefix+"documents/{uid}/due", h.authenticated(h.clearDue))
+	handle("GET "+Prefix+"queues", h.authenticated(h.listQueues))
+	handle("GET "+Prefix+"queues/{slug}", h.authenticated(h.showQueue))
 
 	handle("GET "+Prefix+"element-types", h.authenticated(h.listElementTypes))
 	handle("GET "+Prefix+"workflows", h.authenticated(h.listWorkflows))

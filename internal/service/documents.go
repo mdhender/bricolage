@@ -374,27 +374,6 @@ func (s *Service) GetVersion(ctx context.Context, actor domain.Identity, uid str
 	return DocumentView{Document: doc, Version: v}, nil
 }
 
-// ListDocuments returns the documents the actor may read.
-//
-// The filter is applied here rather than in SQL because the rule is
-// authz.Resolve, which is a pure function over grants the caller already
-// holds, and a second implementation of it in SQL is a second implementation
-// that will disagree. M5 adds the queue filters and the index for them; what
-// this must never become is a list that shows a row the reader may not open.
-func (s *Service) ListDocuments(ctx context.Context, actor domain.Identity, limit int) ([]domain.Document, error) {
-	all, err := s.db.ListDocuments(ctx, limit)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.Document, 0, len(all))
-	for _, d := range all {
-		if authz.Allows(actor.Grants, d.Subject(), domain.Read) {
-			out = append(out, d)
-		}
-	}
-	return out, nil
-}
-
 // Diff is the word-level difference between two versions of a document
 // (PLAN.md M3 acceptance 7).
 type Diff struct {

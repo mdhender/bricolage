@@ -327,14 +327,14 @@ func TestDocumentAuthorization(t *testing.T) {
 	})
 
 	t.Run("a list shows only what the caller may read", func(t *testing.T) {
-		visible, err := h.ListDocuments(t.Context(), reader, 100)
+		visible, err := h.ListDocuments(t.Context(), reader, domain.DocumentFilter{})
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(visible) != 1 {
 			t.Errorf("a reader sees %d documents, want 1", len(visible))
 		}
-		hidden, err := h.ListDocuments(t.Context(), stranger, 100)
+		hidden, err := h.ListDocuments(t.Context(), stranger, domain.DocumentFilter{})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -45,6 +45,16 @@ type documentResponse struct {
 	CheckedOutName string     `json:"checked_out_by_name,omitempty"`
 	LockExpiresAt  *time.Time `json:"lock_expires_at,omitempty"`
 
+	// AssignedTo is whose work this is, by uid, and empty when nobody's.
+	// DueAt is when it is wanted (PLAN.md M5). Overdue is computed against
+	// the server's clock rather than left to the client's, because a browser
+	// with a wrong clock would draw a different queue from the one the server
+	// would return.
+	AssignedTo     string     `json:"assigned_to,omitempty"`
+	AssignedToName string     `json:"assigned_to_name,omitempty"`
+	DueAt          *time.Time `json:"due_at,omitempty"`
+	Overdue        bool       `json:"overdue,omitempty"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 
@@ -119,6 +129,14 @@ func newDocumentResponse(d domain.Document, v domain.Version, now time.Time, who
 		expires := d.Lock.ExpiresAt
 		out.LockExpiresAt = &expires
 	}
+	if d.AssignedTo != 0 && who != nil {
+		out.AssignedTo, out.AssignedToName = who(d.AssignedTo)
+	}
+	if !d.DueAt.IsZero() {
+		due := d.DueAt
+		out.DueAt = &due
+		out.Overdue = d.IsOverdue(now)
+	}
 	return out
 }
 
@@ -155,16 +173,21 @@ func (h *Handler) createDocument(w http.ResponseWriter, r *http.Request, identit
 	h.writeView(w, r, http.StatusCreated, view)
 }
 
-// listDocuments is GET /api/v1/documents. The filters DESIGN.md 12 names as
-// query parameters are the queue filters, and they arrive with the queues in
-// M5; a filter accepted and ignored is worse than one that is not there.
+// listDocuments is GET /api/v1/documents, with the queue filters DESIGN.md 12
+// names as query parameters: state, site, assignee, unassigned, overdue, and
+// limit (PLAN.md M5).
+//
+// Every one of them is enforced, and an unrecognised value is refused rather
+// than ignored: a filter accepted and dropped is a list of the wrong documents
+// presented as the right ones, which is the same failure as a guard nothing
+// enforces (invariant 6).
 func (h *Handler) listDocuments(w http.ResponseWriter, r *http.Request, identity domain.Identity) {
-	limit, err := intParam(r, "limit", 100)
+	filter, err := h.filterFrom(r, identity)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	docs, err := h.svc.ListDocuments(r.Context(), identity, limit)
+	docs, err := h.svc.ListDocuments(r.Context(), identity, filter)
 	if err != nil {
 		h.writeError(w, r, err)
 		return
@@ -193,8 +216,11 @@ func (h *Handler) showDocument(w http.ResponseWriter, r *http.Request, identity 
 //
 // Every field is a pointer because an omitted field and an empty one are
 // different requests. DESIGN.md 12 also lists categories and a due date here;
-// categories are M6 and the due date is M5, and each arrives with its
-// milestone rather than as a field that parses and does nothing.
+// categories arrive with the milestone that creates them, and the due date
+// went to its own subresource in M5 rather than here. The reason is the lease:
+// this route writes the working draft and needs a checkout, and requiring a
+// checkout to set a deadline would mean taking the draft away from the person
+// the deadline is for.
 type patchDocumentRequest struct {
 	Title     *string `json:"title,omitempty"`
 	Slug      *string `json:"slug,omitempty"`

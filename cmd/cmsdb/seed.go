@@ -247,7 +247,9 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 
 	// Idempotent by title: a second run reports what is already there rather
 	// than stacking copies, which is the same promise the rest of seed makes.
-	existing, err := db.ListDocuments(ctx, 1000)
+	existing, err := db.QueryDocuments(ctx, store.DocumentQuery{
+		Filter: domain.DocumentFilter{Limit: 1000},
+	})
 	if err != nil {
 		return err
 	}

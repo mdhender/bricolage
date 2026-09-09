@@ -108,16 +108,17 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 ## State of the tree
 
-M0 through M4 are complete and M5 has not started. `cmsdb` can `init`,
+M0 through M5 are complete and M6 has not started. `cmsdb` can `init`,
 `migrate status`, `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
 `check`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens `DIR/cms.db`,
 refuses to start on any of the four failures in `DESIGN.md` §13.4, and serves
-the session, identity, grant, document, version, diff, history, transition, and
-workflow routes plus `/healthz`. `earl` can `login` (with `--dev`), `whoami`,
-`logout`, `admin grant`, `admin assign`, and
-`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do`.
+the session, identity, grant, document, version, diff, history, transition,
+workflow, assignment, due-date, and queue routes plus `/healthz`. `earl` can
+`login` (with `--dev`), `whoami`, `logout`, `admin grant`, `admin assign`,
+`queue [SLUG]`, and
+`doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due`.
 
-The schema is six migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is seven migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -126,7 +127,10 @@ and `grants.document_id`), and `0005_workflow.sql` (`workflows`,
 `grants.workflow_id`, the default story workflow, and the rebuild of
 `documents`), and `0006_one_workflow_per_kind.sql` (the two partial unique
 indexes that make "a site-specific workflow wins over the general one" a rule
-rather than a tie-break). `grants` carries the scope columns whose target table exists; the
+rather than a tie-break), and `0007_queue_indexes.sql` (the three indexes M5's
+queue queries seek on, replacing the partial `documents_mine` — which could not
+answer "unassigned", since SQLite may only use a partial index when the query's
+`WHERE` implies the index's). `grants` carries the scope columns whose target table exists; the
 rest arrive with the migration that creates theirs, because SQLite cannot add a
 foreign key to a column that already exists. `internal/domain` and
 `internal/authz` already carry and resolve the whole scope.
@@ -142,6 +146,15 @@ cascades into `document_versions`.
 `documents.workflow_id` is `NOT NULL`, so no document row may exist before a
 workflow does, and the rebuild has to place the rows already there. `seed`
 reports what it finds; the state machine is written down once, in SQL.
+
+Assignment is not a transition. `Assign`, `Unassign`, and `SetDue` write
+`documents.assigned_to` and `documents.due_at` through one store method and
+never touch `state`; a transition may still assign as an *effect*, through the
+engine. They need `Edit` over the document and deliberately **not** the edit
+lease: the lease protects the working draft, and requiring a checkout to hand
+work over would mean taking the draft away from the person being handed it.
+Saved queue definitions live in `internal/config`, not in the schema
+(`DESIGN.md` §14).
 
 Exactly one statement writes `documents.state`: the `UPDATE` inside
 `store.ApplyTransition`, which takes the engine's check as a callback and

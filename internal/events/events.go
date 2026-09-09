@@ -81,6 +81,28 @@ const (
 	// at the time. A workflow reconfigured next month does not rewrite what
 	// happened this month.
 	DocumentTransitioned = "document.transitioned"
+
+	// The assignment events (PLAN.md M5 acceptance 2). Assignment and due
+	// dates are properties of the document row rather than of a version, so
+	// changing one is not a check-in and not a transition -- and it still
+	// writes an event, because "who was given this, by whom, and when was it
+	// due" is the question asked about work that did not get done.
+
+	// DocumentAssigned is written when a document is given to somebody. The
+	// payload names the assignee, and the due date when the same request set
+	// one: handing work over with a deadline is one act and one event.
+	DocumentAssigned = "document.assigned"
+
+	// DocumentUnassigned is written when a document is taken off somebody's
+	// list without being given to anybody else. It is its own type rather
+	// than an assignment to nobody, because "returned to the pile" is what a
+	// person reading a history is looking for.
+	DocumentUnassigned = "document.unassigned"
+
+	// DocumentDueChanged is written when the deadline moves without the
+	// assignee changing. The payload carries the new date, or says it was
+	// cleared.
+	DocumentDueChanged = "document.due_changed"
 )
 
 // names are the display names the admin screens and the CLI show. A type with
@@ -101,6 +123,9 @@ var names = map[string]string{
 	DocumentCheckoutCanceled: "Checkout cancelled",
 	DocumentReverted:         "Draft reverted",
 	DocumentTransitioned:     "Moved",
+	DocumentAssigned:         "Assigned",
+	DocumentUnassigned:       "Unassigned",
+	DocumentDueChanged:       "Due date changed",
 }
 
 // All returns every event type this binary knows, in a stable order.
@@ -119,6 +144,9 @@ func All() []string {
 		DocumentCheckoutCanceled,
 		DocumentReverted,
 		DocumentTransitioned,
+		DocumentAssigned,
+		DocumentUnassigned,
+		DocumentDueChanged,
 	}
 }
 

@@ -249,11 +249,27 @@ CREATE TABLE documents (
     REFERENCES workflow_states(workflow_id, slug)
 ) STRICT;
 
-CREATE INDEX documents_queue   ON documents(workflow_id, state, due_at);
-CREATE INDEX documents_mine    ON documents(assigned_to) WHERE assigned_to IS NOT NULL;
-CREATE INDEX documents_overdue ON documents(due_at)      WHERE due_at IS NOT NULL;
-CREATE INDEX documents_live    ON documents(live_version_id) WHERE live_version_id IS NOT NULL;
+CREATE INDEX documents_queue    ON documents(workflow_id, state, due_at);
+CREATE INDEX documents_state    ON documents(state, due_at);
+CREATE INDEX documents_site     ON documents(site_id, state, due_at);
+CREATE INDEX documents_assignee ON documents(assigned_to, state, due_at);
+CREATE INDEX documents_overdue  ON documents(due_at)          WHERE due_at IS NOT NULL;
+CREATE INDEX documents_live     ON documents(live_version_id) WHERE live_version_id IS NOT NULL;
 ```
+
+The three queue indexes are what makes §12's filters on `GET /documents` seek
+rather than scan, and a test asks SQLite with `EXPLAIN QUERY PLAN` rather than
+taking this paragraph's word for it. `documents_assignee` is deliberately not
+partial. It began as `documents_mine ON documents(assigned_to) WHERE assigned_to
+IS NOT NULL`, on the argument that most rows are NULL there and an index over
+them would be an index over nothing anybody asks about — and then M5 made those
+rows exactly what everybody asks about, because "what is nobody working on" is
+an editor's first question of the morning and the one the system we learned from
+could not express at all. SQLite may only use a partial index when the query's
+`WHERE` implies the index's, and `assigned_to IS NULL` implies the opposite of
+`assigned_to IS NOT NULL`; it treats `IS NULL` as an equality constraint, so one
+full index seeks for "assigned to this person" and for "assigned to nobody"
+alike. `internal/migrate/schema/0007_queue_indexes.sql` makes the swap.
 
 ```sql
 CREATE TABLE document_versions (
@@ -1263,7 +1279,8 @@ earl doc revert      UID
 earl doc diff        UID --from N --to M
 earl doc transitions UID                            what may I do, and why not
 earl doc do          UID TRANSITION [--note N]
-earl doc assign      UID --to USER [--due WHEN]
+earl doc assign      UID --to USER [--due WHEN] | --nobody
+earl doc due         UID --at WHEN | --clear
 earl doc approve     UID
 earl doc comment     UID [--reply-to ID] BODY
 earl doc events      UID
@@ -1295,7 +1312,7 @@ GET    /api/v1/me
 GET    /api/v1/documents                         list; filters as query params
 POST   /api/v1/documents                         create
 GET    /api/v1/documents/{uid}
-PATCH  /api/v1/documents/{uid}                   metadata: title, slug, categories, due
+PATCH  /api/v1/documents/{uid}                   draft metadata: title, slug, cover date, categories
 POST   /api/v1/documents/{uid}/checkout
 DELETE /api/v1/documents/{uid}/checkout        release the lease, keeping the draft
 POST   /api/v1/documents/{uid}/checkin
@@ -1309,6 +1326,8 @@ POST   /api/v1/documents/{uid}/transitions       {"to":"review","note":"..."}
 
 POST   /api/v1/documents/{uid}/assignment        {"user":"...","due_at":"..."}
 DELETE /api/v1/documents/{uid}/assignment
+PUT    /api/v1/documents/{uid}/due               {"at":"2026-03-01"}
+DELETE /api/v1/documents/{uid}/due
 POST   /api/v1/documents/{uid}/approvals
 DELETE /api/v1/documents/{uid}/approvals/current
 GET    /api/v1/documents/{uid}/comments
@@ -1319,6 +1338,7 @@ GET    /api/v1/documents/{uid}/events
 POST   /api/v1/documents/{uid}/publications      {"at":...,"channels":[...],"dry_run":bool}
 GET    /api/v1/documents/{uid}/resources
 
+GET    /api/v1/queues                           the saved definitions
 GET    /api/v1/queues/{slug}
 GET    /api/v1/jobs
 POST   /api/v1/jobs/{id}/retry
@@ -1336,6 +1356,18 @@ Modelling **transitions as a subresource** is the point of the design: `GET`
 tells you what the state machine permits and why, `POST` performs one. It makes
 the workflow visible in the API instead of hiding it behind `PATCH state=`.
 Never expose a plain `PATCH` that sets `state`.
+
+Assignment and the due date are subresources for the same reason, and they are
+deliberately *not* fields on `PATCH /documents/{uid}`. That route writes the
+working draft and needs the edit lease; who is doing a piece of work and when it
+is wanted are properties of the document row, and requiring a checkout to set a
+deadline would mean taking the draft away from the person the deadline is for.
+They are two subresources rather than one because a deadline belongs to the work
+rather than to whoever is holding it: putting a document down does not make it
+less late, so `DELETE .../assignment` leaves `due_at` alone.
+
+`{"user":"me"}` and `?assignee=me` name the caller, which saves a client a round
+trip to `/me` and is what a saved queue's `assignee: me` resolves to per request.
 
 The checkout is a subresource for the same reason. `POST` takes the edit lease,
 and `DELETE` releases it **without discarding the draft** — which is a different
@@ -1637,7 +1669,33 @@ server.public_origin    https://htmx-app.localhost:8443
 server.trusted_proxies  ["127.0.0.1/32", "::1/128"]
 server.workers          1
 server.timeout          0                      graceful shutdown after this; 0 = never
+
+queues                  the built-in set       saved queue definitions; see below
 ```
+
+**Saved queues are configuration, not schema.** A queue is a named question
+about the document table — "in review and nobody's", "mine", "late" — and
+naming one has no identity anybody refers to, nothing points at it, and no
+history worth keeping. An installation that wants a different set wants a
+different config file, not a migration and an admin screen; the system we
+learned from made every such list a row somewhere, and the result was that
+changing what an editor saw meant a database write nobody could review.
+
+Each definition is a slug, a name, a description, and the question: a workflow
+state, an assignee constraint (`""` for anybody, `me` for whoever is asking,
+`nobody` for the unassigned pile), and whether to restrict to overdue work.
+`me` is resolved per request, which is what makes one definition serve every
+editor. A constraint word this binary does not recognise is refused rather than
+widened to "anybody" — a queue silently widened to everything shows an editor
+somebody else's work, which is invariant 6's failure in a smaller costume.
+
+`internal/config` holds the type and the built-in set, spelled in its own
+vocabulary rather than in `internal/domain`'s, because it imports the standard
+library and nothing else; `internal/service` turns a definition into a
+`domain.DocumentFilter` and then runs the same code path a filtered
+`GET /documents` runs. There is deliberately no second query behind a queue: a
+saved question that resolved differently from the same question asked directly
+is a saved question nobody could trust.
 
 `public_origin` is authoritative for absolute URLs, cookie attributes, and the
 CSRF trusted-origin list. It is never inferred from the `Host` header.
