@@ -1572,7 +1572,10 @@ it is a directory — so a server missing either says so once at startup rather
 than once per attempt.
 
 Graceful shutdown: stop accepting, drain in-flight requests, let workers finish
-the current job or release its lease, close the pool.
+the current job or release its lease, close the pool. Closing the pool
+checkpoints the write-ahead log, and the order it closes in is what makes that
+possible; see §13.3. The result is logged, because the evidence that it did not
+happen is a file size nobody has a reason to look at.
 
 ### Serving model: `cmsd` runs behind a reverse proxy
 
@@ -2274,6 +2277,21 @@ a freshly created empty file. That is right for `cmsdb init` and wrong for
   whole life while the rest of the process looks correct.
 - **WAL mode on persistent stores.** An in-memory database has no WAL; asking
   for it there is a no-op at best.
+- **The pool closes readers first, then checkpoints, then closes the writer.**
+  A checkpoint is a write to the main database file, so it needs the write
+  connection still open — and the readers have to be gone first, because a
+  `TRUNCATE` checkpoint cannot reclaim a log another connection may still be
+  reading. Closing the writer first leaves a read-only connection as the last
+  one standing, SQLite skips the checkpoint it performs when the last
+  connection closes, and `cms.db-wal` survives a clean shutdown byte for byte.
+  The checkpoint is then made explicitly with `PRAGMA wal_checkpoint(TRUNCATE)`
+  rather than left to that implicit one, which is best-effort and silent: it is
+  skipped when the lock cannot be taken and leaves no trace when it is skipped.
+  The property being reached for is that **after a graceful stop, `cms.db` on
+  its own is a complete copy** — which is the backup `deploy/README.md` tells an
+  operator to take. A checkpoint that fails is a warning and never a failure of
+  the close: everything is committed either way, and the log is replayed by the
+  next open, which is also what has to keep working after a `SIGKILL`.
 - **`busy_timeout` on every connection.**
 - **Open flags are always explicit.** The zero value of
   `sqlitex.PoolOptions.Flags` and the no-flag form of `sqlite.OpenConn` both

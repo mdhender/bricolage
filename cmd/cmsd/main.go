@@ -165,7 +165,29 @@ func newServeCmd(f *flags) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			// The tail of the one shutdown path (invariant 17): this runs
+			// after Run has stopped accepting and drained, and it is where
+			// the write-ahead log is checkpointed back into cms.db.
+			//
+			// Logged, with the result, because the evidence that it did not
+			// happen is a file size an operator has no reason to look at
+			// (#11). A checkpoint that could not run is a warning: everything
+			// is committed either way, and the log is replayed by the next
+			// open.
+			defer func() {
+				err := db.Close()
+				ck := db.CloseCheckpoint()
+				switch {
+				case err != nil:
+					settings.log.Error("closing the database", "path", db.Path(), "error", err)
+				case ck.Truncated():
+					settings.log.Info("database closed",
+						"path", db.Path(), "wal", "truncated", "pages_moved", ck.Moved)
+				default:
+					settings.log.Warn("database closed with a write-ahead log still on disk",
+						"path", db.Path(), "wal_pages", ck.Pages, "busy", ck.Busy, "error", ck.Err)
+				}
+			}()
 			settings.log.Info("database opened",
 				"path", db.Path(),
 				"user_version", db.SchemaVersion(),
