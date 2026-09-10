@@ -141,9 +141,13 @@ rsync -av deploy/linux/amd64/ cms:/opt/cms/bin/
 `cms` is a `~/.ssh/config` host alias for the droplet — see `PROVISIONING.md`,
 step 1. There is deliberately no `--chmod=F755`: recent macOS ships openrsync,
 which rejects it, and `make release` already leaves the binaries `755` for
-`rsync -a` to preserve. Then restart the service: "Deploying a new version" below has the order,
-which is not simply `systemctl restart`. `deploy/linux/` is build output and is
-not committed.
+`rsync -a` to preserve. `deploy/linux/` is build output and is not committed.
+
+**On a server that is already running, this `rsync` is not the first step.**
+"Deploying a new version" below has the order, which is neither a plain
+`systemctl restart` nor an upload followed by one: the backup is taken before
+the binaries are replaced, because a backup is taken by a binary that agrees
+with the database.
 
 Two checks worth doing once, on the server, before the first restart:
 
@@ -157,54 +161,97 @@ the binary was built without `-tags production` and must not be deployed.
 
 ## Deploying a new version
 
-The first deploy is `PROVISIONING.md`. Every one after it is this:
+The first deploy is `PROVISIONING.md`. Every one after it is four steps, and
+they alternate between the two machines. Build on the Mac:
 
 ```sh
 make check
 make release
+```
+
+Stop the service and take the backup **on the droplet, with the binaries that
+are already there**:
+
+```sh
+sudo systemctl stop cms
+CMS_ENV=production /opt/cms/bin/cmsdb backup \
+  --db /opt/cms/var --to "/opt/cms/backups/cms-$(date +%F).db"
+```
+
+Ship the new binaries, from the Mac:
+
+```sh
 rsync -av deploy/linux/amd64/ cms:/opt/cms/bin/
 rsync -av --exclude=linux/ deploy/ cms:/opt/cms/deploy/
 ```
 
-Then, on the droplet:
+Migrate and start, on the droplet:
 
 ```sh
-sudo systemctl stop cms
 CMS_ENV=production /opt/cms/bin/cmsdb migrate status --db /opt/cms/var
 CMS_ENV=production /opt/cms/bin/cmsdb migrate up --db /opt/cms/var
 sudo systemctl start cms
 ```
 
-**The order is the point.** `cmsd` requires `PRAGMA user_version` to equal the
-number of migrations the binary embeds, and refuses to start otherwise (§13.4)
-— so a new binary with a pending migration will not run, which is the intended
-behaviour and not a bug to work around. The service is stopped first because
-`cmsdb` and `cmsd` would otherwise contend for the same SQLite write lock.
+**The order is the point, and three separate things fix it in place.**
 
-Take the backup before the migration, not after:
+*The backup is taken before the upload because a backup is taken by a binary
+that agrees with the database.* `cmsdb backup` opens the database the way every
+other `cmsdb` subcommand does, which requires `PRAGMA user_version` to equal the
+number of migrations that binary embeds. The binary already on the server
+matches the database already on the server; the new one does not, and will not
+until `migrate up` has run. Upload first and the backup step refuses —
 
-```sh
-CMS_ENV=production /opt/cms/bin/cmsdb backup \
-  --db /opt/cms/var --to "/opt/cms/backups/cms-$(date +%F).db"
+```
+cmsdb: database "/opt/cms/var/cms.db": user_version is 13, expected 14, which is
+the number of migrations this binary embeds: run "cmsdb migrate up --db ..."
 ```
 
-It prints the path, the size, and the `user_version`, and it says `verified`
-only after opening what it wrote and checking it. Put that output in the deploy
-log: a backup is a file nobody reads until the day it matters, and that is the
-wrong day to find out it is zero bytes.
+— with the service already down, which is the worst moment to be improvising.
+Taking it first is not a workaround for that refusal; it is the arrangement in
+which the question never comes up. Whether `backup` should ask the question at
+all is issue #25, and this order does not depend on the answer.
+
+*The service is stopped before the backup so that the file is exactly the state
+the migration is about to act on.* `backup` does not need the service stopped —
+`VACUUM INTO` takes its own read transaction and runs happily against a live
+server — but a backup taken while `cmsd` is still accepting writes is a backup
+missing whatever arrived between it and the stop. Those are the edits somebody
+would most want back.
+
+*The service starts last because it cannot start earlier.* `cmsd` requires
+`user_version` to equal the number of migrations it embeds and refuses to start
+otherwise (§13.4), so a new binary with a pending migration will not run — the
+intended behaviour, not a bug to work around. The stop has to bracket the
+migration anyway: `cmsdb` and `cmsd` would otherwise contend for the same SQLite
+write lock.
+
+The cost is that the `rsync` now happens inside the outage rather than before
+it. That is tens of megabytes over one connection — seconds, on a service that
+is already down for the migration — and it buys a deploy with no step that has
+to be invented while the site is off.
+
+`backup` prints the path, the size, and the `user_version`, and it says
+`verified` only after opening what it wrote and checking it. Put that output in
+the deploy log: a backup is a file nobody reads until the day it matters, and
+that is the wrong day to find out it is zero bytes.
 
 `/opt/cms/backups` must already exist — nothing in this system creates a
 directory, and `PROVISIONING.md` §4 makes it. An existing file is refused
 rather than replaced, so a second deploy on the same day needs `--overwrite`
 and a moment's thought about which backup you would rather have.
 
-The command does not need the service stopped; it is placed here only because
-the backup belongs **before** the migration. To verify one later, name it
-directly:
+To verify a backup later, name it directly:
 
 ```sh
 CMS_ENV=production /opt/cms/bin/cmsdb check --file /opt/cms/backups/cms-2026-09-09.db
 ```
+
+That works on a backup taken at the schema the current binaries embed, and
+**not** on an older one: `check --file` applies the same version rule, so a
+backup taken before the last migration is refused rather than read. It is the
+other half of issue #25, and this deploy order does not route around it —
+keep the binary that made a backup if you expect to want to read it.
 
 **Restoring is a `cp` with the service stopped**, and deliberately not a
 command:
@@ -221,9 +268,10 @@ Run those as `deploy`, which owns `/opt/cms` and is the account the unit runs
 as. Remove the write-ahead log and its index along with the database: they
 belong to the one being replaced, and leaving them beside a different one is
 the one way to turn a good backup into a corrupt database. The `check` before
-starting is what tells you the restore landed — including that `user_version`
-matches the binary in `/opt/cms/bin`, which it will not if you restored across
-a migration.
+starting is what tells you the restore landed. It also refuses outright if
+`user_version` does not match the binary in `/opt/cms/bin`, which is what
+restoring across a migration produces: put back the binaries that go with the
+backup, or migrate the restored database up before starting.
 
 Migrations are append-only after beta. Until then a squash is a deliberate,
 separately announced event — and on a database that has been deployed, it is a
