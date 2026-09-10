@@ -304,3 +304,176 @@ func rowsIn(t *testing.T, path string) int {
 	}
 	return n
 }
+
+// TestBackupTakesAnyVersion is issue #25: the one deploy where a backup
+// matters is the one where it could not be taken.
+//
+// On a deploy carrying a migration the new binaries are on the server and the
+// database is still at the old schema, so binary and database disagree by
+// construction. Requiring them to agree made "cmsdb backup" refuse exactly
+// then, with the service already stopped.
+func TestBackupTakesAnyVersion(t *testing.T) {
+	behind := int32(migrate.Count()) - 1
+	if behind < 1 {
+		t.Skip("needs at least two migrations to have a version to be behind")
+	}
+
+	for _, tc := range []struct {
+		name    string
+		version int32
+	}{
+		{"behind, which is what a deploy carrying a migration looks like", behind},
+		// Ahead is accepted here and nowhere else. Copying a newer file with
+		// an older cmsdb produces a correct copy of a newer file; refusing it
+		// would be the same mistake pointing the other way.
+		{"ahead, which is an older cmsdb against a migrated database", int32(migrate.Count()) + 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			db, err := Create(t.Context(), dir)
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if err := db.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			setUserVersion(t, Path(dir), tc.version)
+
+			// The refusal this issue is about happens at Open, before any of
+			// the backup runs, which is why the policy is the fix.
+			if _, err := Open(t.Context(), dir, Options{}); err == nil {
+				t.Fatal("the default policy opened a database at another version; this test proves nothing")
+			}
+			open, err := Open(t.Context(), dir, Options{Version: AnyVersion})
+			if err != nil {
+				t.Fatalf("Open(AnyVersion) at user_version %d: %v", tc.version, err)
+			}
+			defer open.Close()
+
+			to := filepath.Join(t.TempDir(), "backup.db")
+			report, err := open.Backup(t.Context(), to, BackupOptions{Now: time.Now()})
+			if err != nil {
+				t.Fatalf("Backup at user_version %d: %v", tc.version, err)
+			}
+			if report.Check.SchemaVersion != tc.version {
+				t.Errorf("the backup reports user_version %d, want %d; which schema is in the file is the "+
+					"thing somebody restoring it needs to know",
+					report.Check.SchemaVersion, tc.version)
+			}
+			if report.Size == 0 {
+				t.Error("the backup is zero bytes")
+			}
+		})
+	}
+}
+
+// TestCheckFileReadsAnOlderBackup is the other half of #25. A backup outlives
+// the binaries that made it, so the file whose whole purpose is to be readable
+// on the worst day must not need a build that embeds exactly as many
+// migrations as it did.
+func TestCheckFileReadsAnOlderBackup(t *testing.T) {
+	behind := int32(migrate.Count()) - 1
+	if behind < 1 {
+		t.Skip("needs at least two migrations")
+	}
+
+	dir := t.TempDir()
+	db, err := Create(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	setUserVersion(t, Path(dir), behind)
+
+	report, err := CheckFile(t.Context(), Path(dir), time.Now())
+	if err != nil {
+		t.Fatalf("CheckFile on a database at user_version %d: %v", behind, err)
+	}
+	if !report.OK() {
+		t.Errorf("the file is reported unsound: %+v", report)
+	}
+	if report.SchemaVersion != behind {
+		t.Errorf("SchemaVersion = %d, want %d", report.SchemaVersion, behind)
+	}
+	if report.Migrations != migrate.Count() {
+		t.Errorf("Migrations = %d, want the number this binary embeds, %d", report.Migrations, migrate.Count())
+	}
+}
+
+// TestAnyVersionStillRefusesAnotherSystemsDatabase: the version stops being a
+// condition, and the application ID does not. A file that is not ours is
+// refused whatever is being done to it.
+func TestAnyVersionStillRefusesAnotherSystemsDatabase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, dbFileName)
+
+	conn, err := sqlite.OpenConn(path, sqlite.OpenReadWrite|sqlite.OpenCreate|sqlite.OpenWAL)
+	if err != nil {
+		t.Fatalf("OpenConn: %v", err)
+	}
+	if err := sqlitex.ExecuteTransient(conn, "PRAGMA application_id = 12345;", nil); err != nil {
+		t.Fatalf("setting the application id: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var appErr *AppIDError
+	if _, err := Open(t.Context(), dir, Options{Version: AnyVersion}); !errors.As(err, &appErr) {
+		t.Errorf("Open(AnyVersion) on somebody else's database = %v, want an AppIDError", err)
+	}
+	if _, err := CheckFile(t.Context(), path, time.Now()); !errors.As(err, &appErr) {
+		t.Errorf("CheckFile on somebody else's database = %v, want an AppIDError", err)
+	}
+}
+
+// TestCheckFileOnASchemaWithoutAQueue is what "any version" implies once it is
+// really any version: the checks have to survive a schema older than the tables
+// they ask about.
+//
+// Migration 0008 created the jobs table. Before it, counting stuck leases is
+// "no such table" — neither a fault in the file nor anything the person
+// holding it can act on. The count is skipped and the report says it was
+// skipped, because "no stuck leases" and "no queue to have any" are different
+// answers (issue #25).
+func TestCheckFileOnASchemaWithoutAQueue(t *testing.T) {
+	const beforeTheQueue = 7 // 0008_jobs.sql creates the table
+
+	dir := t.TempDir()
+	createAt(t, dir, beforeTheQueue)
+
+	report, err := CheckFile(t.Context(), Path(dir), time.Now())
+	if err != nil {
+		t.Fatalf("CheckFile on a pre-queue schema: %v", err)
+	}
+	if !report.OK() {
+		t.Errorf("the file is reported unsound: %+v", report)
+	}
+	if report.SchemaVersion != beforeTheQueue {
+		t.Errorf("SchemaVersion = %d, want %d", report.SchemaVersion, beforeTheQueue)
+	}
+	if report.QueueChecked {
+		t.Error("the check claims it counted stuck leases on a schema with no jobs table")
+	}
+	if report.StuckJobLeases != 0 {
+		t.Errorf("StuckJobLeases = %d on a schema with no queue", report.StuckJobLeases)
+	}
+
+	// And the ordinary case still answers, so the guard has not turned the
+	// count off everywhere.
+	full := t.TempDir()
+	db, err := Create(t.Context(), full)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer db.Close()
+	got, err := db.Check(t.Context(), time.Now())
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !got.QueueChecked {
+		t.Error("a current schema reports the queue as unchecked")
+	}
+}

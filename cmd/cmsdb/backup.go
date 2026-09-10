@@ -38,7 +38,13 @@ func newBackupCmd() *cobra.Command {
 			"creates a directory, and a backup command is no exception.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			db, err := store.Open(cmd.Context(), dir, store.Options{})
+			// AnyVersion: a backup is a copy of a file, not an interpretation
+			// of its rows, so the application ID is the only thing it has to
+			// agree about (issue #25). Requiring the version to match made
+			// this command refuse the database the deploy procedure exists to
+			// back up, because on a deploy carrying a migration the new binary
+			// and the old database disagree by construction.
+			db, err := store.Open(cmd.Context(), dir, store.Options{Version: store.AnyVersion})
 			if err != nil {
 				return err
 			}
