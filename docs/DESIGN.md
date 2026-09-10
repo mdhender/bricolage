@@ -2421,24 +2421,35 @@ and both are indistinguishable from success in a health check.
   `uid` column, a lowercase ULID. **The API speaks only `uid`.** Integer ids
   never appear in a URL, a JSON body, or a log line intended for users.
 
-### 13.6 Migrations are append-only, after beta
+### 13.6 Migrations are append-only
 
-Once a migration file is committed and released it is never edited; mistakes are
-fixed with a new migration.
+Once a migration file is committed it is never edited, never reordered, and
+never removed; mistakes are fixed with a new migration. There is no exception,
+and the number of files only grows.
 
-**While the project is in beta this rule is suspended, deliberately.**
-Migrations may be squashed into one file and every existing database rebuilt
-from scratch. There is no sacred data in beta and no upgrade path is owed to
-anyone, so paying for one in accumulated migration files buys nothing.
+**This rule used to be suspended during beta**, and the suspension is now
+withdrawn. The reasoning for having it was sound and has simply expired: there
+was no sacred data, no upgrade path was owed to anybody, and paying for one in
+accumulated migration files bought nothing. What changed is that the project
+now deploys to a server, migrates a database it did not create in the same
+afternoon, and takes backups it expects to be able to read — so there is an
+upgrade path, and it is owed to us.
 
-Squashing resets `user_version` to the new migration count, which is exactly why
-`cmsd` checks it (§13.4): a database left over from before a squash fails
-loudly on startup instead of being migrated forward along a path that no longer
-exists. `cmsdb init` against a fresh directory is the recovery, and in beta that
-is a complete answer.
+The withdrawal is also what makes the schema version safe to rely on.
+`user_version` is not ours: `sqlitemigration` maintains it, and its value is the
+number of migrations that have been applied. **Nothing in this system ever
+writes that pragma** — not a command, not a test helper, not a recovery
+procedure. So the only way the number can move is by applying a migration, and
+with append-only in force it moves in one direction and never revisits a value.
+A squash would have broken exactly that: it lowers the count while every
+deployed database keeps the old one, which leaves those databases permanently
+*ahead* of the binary, refused by §13.4 and unreachable by `cmsdb migrate up` —
+and unrepairable, because repairing it would mean writing `user_version` by
+hand.
 
-The exception ends at the first release whose data somebody else depends on. It
-is written down here so that its ending is a decision rather than an oversight.
+`cmsdb init` against a fresh directory was the recovery from a squash, and it
+was a complete answer for exactly as long as no database held anything worth
+keeping.
 
 ## 14. Cross-cutting
 

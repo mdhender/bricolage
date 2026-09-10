@@ -283,14 +283,17 @@ These are not style preferences. Violating one is a bug even if the tests pass.
    reconstruct what happened.
 8. **Publish jobs pin a version id, never a document id.** The approved version
    is what ships, whatever the draft has become.
-9. **Migrations are append-only — after beta.** Once committed and released, a
-   migration file is never edited; fix mistakes with a new migration. **This
-   rule is suspended while the project is in beta**, by deliberate exception
-   (`DESIGN.md` §13.6): migrations may be squashed and every database rebuilt,
-   because there is no sacred data in beta and no upgrade path is owed to
-   anyone. The exception ends at the first release somebody else's data depends
-   on. It does not license editing a migration to avoid writing a new one during
-   ordinary work — squashing is a deliberate act, announced in its own commit.
+9. **Migrations are append-only.** Once committed, a migration file is never
+   edited, never reordered, and never removed; fix mistakes with a new
+   migration. The number of files only grows. There is **no beta exception** —
+   there used to be one, permitting a squash, and it is withdrawn
+   (`DESIGN.md` §13.6). Squashing lowers the migration count while every
+   deployed database keeps the old one, leaving those databases permanently
+   *ahead* of the binary: refused by invariant 21, unreachable by
+   `cmsdb migrate up`, and unrepairable without doing the one thing invariant 21
+   forbids. **Never write `PRAGMA user_version`.** It belongs to
+   `sqlitemigration`, its value is the number of migrations applied, and the
+   only thing that may move it is applying one.
 10. **The API speaks `uid` only.** Internal integer primary keys never appear in
     a URL, a JSON body, or user-facing output.
 11. **Detect constraint violations by result code**, never by matching error
@@ -356,10 +359,14 @@ These are not style preferences. Violating one is a bug even if the tests pass.
     `PRAGMA application_id` must be `0x434D5330` (the ASCII bytes of `CMS0`) and
     `PRAGMA user_version` must equal the number of embedded migrations, exactly —
     ahead and behind are both hard failures. Both pragmas are maintained by
-    `sqlitemigration`; never write a `schema_migrations` table or any other
-    hand-rolled version bookkeeping. `sqlitemigration`'s own application-ID check
-    adopts an ID of `0` when the database has no schema, so `cmsd` performs this
-    check itself rather than inheriting that leniency (`DESIGN.md` §13.4).
+    `sqlitemigration`; **never write `PRAGMA user_version`**, never write a
+    `schema_migrations` table, and never keep any other hand-rolled version
+    bookkeeping. The value means "this many migrations have been applied", and
+    applying one is the only thing permitted to move it — which is what makes
+    it trustworthy, and what invariant 9 protects by refusing a squash.
+    `sqlitemigration`'s own application-ID check adopts an ID of `0` when the
+    database has no schema, so `cmsd` performs this check itself rather than
+    inheriting that leniency (`DESIGN.md` §13.4).
 22. **`foreign_keys = ON` on every connection of every store**, in-memory
     included; **WAL on every persistent store**. Both are per-connection
     settings, so one connection that skips them is silently wrong for its whole

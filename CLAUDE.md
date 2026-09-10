@@ -39,8 +39,11 @@ go test -tags production ./internal/buildenv/   # the tagged half of the interlo
 `/__development/` pattern, with exactly one caller of `devroutes.Register`
 (invariant 16); and `documents.state` is written by one statement, in
 `internal/store/workflow.go`, whose `ApplyTransition` has one caller, in
-`internal/workflow` (invariants 2 and 4). CI adds a fourth: `time.Now()`
-appears only in `main` and `internal/clock` (invariant 3).
+`internal/workflow` (invariants 2 and 4); and nothing writes
+`PRAGMA user_version`, in Go or in a migration, the two test helpers that
+manufacture a database at the wrong version being the named exception
+(invariant 21). CI adds a fifth: `time.Now()` appears only in `main` and
+`internal/clock` (invariant 3).
 
 `make release` cross-compiles for linux/amd64 with `-tags production`. Never run
 it as a side effect of another task, and never deploy.
@@ -460,8 +463,13 @@ work walks into:
 - `time.Now()` only in `main` and `internal/clock`; everything else takes a
   `Clock`.
 - One shutdown path, reached by SIGTERM, `--timeout`, and the dev route alike.
-- Migrations are append-only *after beta*; the beta exception is a deliberate,
-  separately announced squash, not a licence to edit one during ordinary work.
+- Migrations are append-only, with no exception: never edited, never reordered,
+  never removed, and the count only grows. The beta squash permission is
+  withdrawn (`DESIGN.md` §13.6) — a squash lowers the count while deployed
+  databases keep the old one, which strands them *ahead* of the binary with no
+  repair that is not writing `PRAGMA user_version` by hand. Never write that
+  pragma; it is `sqlitemigration`'s, and applying a migration is the only thing
+  that may move it.
 - Autocomplete is denied by default on every form control (invariant 23). A
   field opts in only if it holds the credentials of the person looking at the
   screen, and says why in the template; two do. A control that declares nothing

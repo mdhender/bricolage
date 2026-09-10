@@ -52,7 +52,7 @@ fmt:
 	fi
 
 ## lint: the greps that catch the rules nobody notices breaking.
-lint: no-mkdir no-dev-routes one-state-writer
+lint: no-mkdir no-dev-routes one-state-writer no-version-writes
 
 ## no-mkdir: nothing creates a directory it was told to use (invariant 19).
 ##
@@ -79,6 +79,33 @@ no-mkdir:
 		echo "$$callers"; exit 1; \
 	fi
 	$(GO) test -run 'TestNewTreeNeverCreatesItsRoot|TestNothingCreatesADirectory' ./internal/publish/ ./internal/store/
+
+## no-version-writes: nothing writes PRAGMA user_version (invariant 21).
+##
+## It belongs to sqlitemigration, its value is the number of migrations that
+## have been applied, and applying one is the only thing permitted to move it.
+## That is what makes it trustworthy enough for cmsd to refuse to start over
+## (DESIGN.md 13.4) -- a number anything may set is a number that says nothing.
+##
+## A migration file may not write it either: sqlitemigration advances it once
+## per migration, so a migration that also set it would be counting twice.
+##
+## Two test helpers do write it, and are excluded rather than forbidden:
+## cmd/cmsd/storage_test.go and internal/store/store_test.go manufacture a
+## database at the wrong version, which is the only way to test that the check
+## refuses one. Forbidding them would mean deleting the test that guards the
+## invariant this rule protects.
+no-version-writes:
+	@if grep -rniE 'pragma[[:space:]]+user_version[[:space:]]*=' ./cmd ./internal \
+		--include='*.go' --include='*.sql' | grep -v '_test\.go:'; then \
+		echo "lint: nothing writes PRAGMA user_version (invariant 21, DESIGN.md 13.6)"; exit 1; \
+	fi
+	@writers=$$(grep -rlniE 'pragma[[:space:]]+user_version[[:space:]]*=' ./cmd ./internal \
+		--include='*.go' --include='*.sql' | sort | tr '\n' ' '); \
+	if [ "$$writers" != "./cmd/cmsd/storage_test.go ./internal/store/store_test.go " ]; then \
+		echo "lint: the two version-setting test helpers are the only ones (invariant 21); found:"; \
+		echo "$$writers"; exit 1; \
+	fi
 
 ## no-dev-routes: the /__development/* routes are registered only when the
 ## resolved environment is exactly "development" (invariant 16).

@@ -273,9 +273,13 @@ starting is what tells you the restore landed. It also refuses outright if
 restoring across a migration produces: put back the binaries that go with the
 backup, or migrate the restored database up before starting.
 
-Migrations are append-only after beta. Until then a squash is a deliberate,
-separately announced event — and on a database that has been deployed, it is a
-restore-from-backup, not a `migrate up`.
+Migrations are append-only, and the beta exception that once permitted a squash
+is withdrawn (`DESIGN.md` §13.6). That is a promise to this server: the schema
+version only ever goes up, so a database here is always either current or
+behind, and behind is what `cmsdb migrate up` is for. Nothing on this machine
+should ever write `PRAGMA user_version` — if a database appears to be *ahead* of
+the binaries in `/opt/cms/bin`, the binaries are the wrong ones, and the fix is
+to deploy the right ones rather than to touch the database.
 
 If the unit file or a proxy config changed in the same push, install it from
 `/opt/cms/deploy/` and reload that service; the copies under `/etc` are meant
