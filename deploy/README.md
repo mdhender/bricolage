@@ -187,6 +187,14 @@ Take the backup before the migration, not after:
 sqlite3 /opt/cms/var/cms.db ".backup '/opt/cms/backups/cms-$(date +%F).db'"
 ```
 
+**With the service stopped, copying `cms.db` alone is enough.** A graceful
+shutdown checkpoints the write-ahead log back into the database file and logs
+that it did (`msg="database closed" ... wal=truncated`), so there is nothing
+left in `cms.db-wal` for the copy to miss. That is not true of a *running*
+server or of one that was killed: there, the log holds commits the database
+file does not, and a backup has to be `sqlite3 .backup` or all three of
+`cms.db`, `cms.db-wal`, and `cms.db-shm` copied as a set.
+
 Migrations are append-only after beta. Until then a squash is a deliberate,
 separately announced event — and on a database that has been deployed, it is a
 restore-from-backup, not a `migrate up`.

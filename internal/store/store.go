@@ -58,6 +58,51 @@ type DB struct {
 
 	closeOnce sync.Once
 	closeErr  error
+
+	// closeCheckpoint is what the checkpoint Close performs did. It is read
+	// after Close, by a caller that wants to log it, which is why it is
+	// remembered rather than returned: Close is deferred everywhere and its
+	// error is the thing a defer can discard, while "the write-ahead log is
+	// empty" is a success this system has to be able to say out loud.
+	closeCheckpoint Checkpoint
+}
+
+// Checkpoint is what a write-ahead log checkpoint did, as PRAGMA
+// wal_checkpoint reports it. The zero value is a checkpoint that never ran.
+type Checkpoint struct {
+	// Ran is true once the pragma has been attempted, whatever came of it.
+	Ran bool
+
+	// Busy is SQLite's first column: the checkpoint could not get the lock it
+	// needed and stopped early. It is not an error — the data is committed
+	// either way and the next opener recovers the log — but it does mean the
+	// log is still on disk.
+	Busy bool
+
+	// Pages is SQLite's second column: the size of the write-ahead log in
+	// pages once the checkpoint finished, so zero after a TRUNCATE that got
+	// what it came for. It is -1 for a database that is not in WAL mode,
+	// where the pragma is a documented no-op; the in-memory store is the one
+	// here that answers that way.
+	Pages int
+
+	// Moved is SQLite's third column: pages moved out of the log and into the
+	// database file, and -1 in the same not-in-WAL-mode case as Pages.
+	Moved int
+
+	// Err is why the pragma did not run. A checkpoint that fails is a warning
+	// and never a failure of the operation that triggered it: everything is
+	// committed, and what is left behind is a log the next open replays.
+	Err error
+}
+
+// Truncated reports whether the write-ahead log is empty, so that a copy of
+// the database file alone is a complete copy.
+//
+// A database that is not in WAL mode answers true, because there is no log to
+// leave behind.
+func (c Checkpoint) Truncated() bool {
+	return c.Ran && c.Err == nil && !c.Busy && c.Pages <= 0
 }
 
 // Path returns the database file this DB opened. It is the directory that was
@@ -135,27 +180,81 @@ func (db *DB) Tx(ctx context.Context, fn func(conn *sqlite.Conn) error) error {
 	})
 }
 
-// Close closes the writer and the reader pool. It is idempotent, so a
-// command's defer and a server's shutdown may both call it.
+// Close checkpoints the write-ahead log and closes the pool. It is idempotent,
+// so a command's defer and a server's shutdown may both call it.
+//
+// The order is the whole point, and it is the reverse of the obvious one: the
+// readers go first, then the log is checkpointed, then the writer. A
+// checkpoint is a write to the main database file, so it needs the write
+// connection to still be open — and the readers have to be gone before it,
+// because a TRUNCATE checkpoint cannot reclaim a log another connection may
+// still be reading from. Closing the writer first, which is what this did
+// until #11, left a read-only connection as the last one standing: SQLite
+// skipped the checkpoint it performs when the last connection to a database
+// closes, and cms.db-wal survived a clean shutdown byte for byte.
+//
+// The explicit pragma is here rather than left to that implicit checkpoint
+// because the implicit one is best-effort and silent. It is skipped if the
+// lock cannot be taken and leaves no trace when it is skipped, and "a copy of
+// cms.db is a complete copy" is a promise this system makes to anybody
+// following deploy/README.md's instruction to back up before migrating.
+//
+// A checkpoint that fails is not a close that failed. Everything is committed
+// either way and the log the next open finds is replayed; the result is
+// remembered for CloseCheckpoint to report and the error is not joined into
+// the one Close returns.
 func (db *DB) Close() error {
 	db.closeOnce.Do(func() {
 		var errs []error
-		db.writeMu.Lock()
-		if db.write != nil {
-			// Clear any interrupt left by a cancelled Write; a conn closed
-			// while interrupted reports the interrupt instead of closing.
-			db.write.SetInterrupt(nil)
-			errs = append(errs, db.write.Close())
-			db.write = nil
-		}
-		db.writeMu.Unlock()
 		if db.reads != nil {
 			errs = append(errs, db.reads.Close())
 			db.reads = nil
 		}
+		db.writeMu.Lock()
+		if db.write != nil {
+			// Clear any interrupt left by a cancelled Write; a conn closed
+			// while interrupted reports the interrupt instead of closing, and
+			// an interrupted connection cannot checkpoint either.
+			db.write.SetInterrupt(nil)
+			db.closeCheckpoint = checkpoint(db.write)
+			errs = append(errs, db.write.Close())
+			db.write = nil
+		}
+		db.writeMu.Unlock()
 		db.closeErr = errors.Join(errs...)
 	})
 	return db.closeErr
+}
+
+// CloseCheckpoint reports what the checkpoint in Close did. Before Close it is
+// the zero Checkpoint, which is a checkpoint that never ran.
+//
+// It is an accessor on a closed database for the same reason Path and
+// SchemaVersion are: the value was read while there was still a connection to
+// read it from, and afterwards there is not.
+func (db *DB) CloseCheckpoint() Checkpoint { return db.closeCheckpoint }
+
+// checkpoint runs PRAGMA wal_checkpoint(TRUNCATE) on conn and reports what it
+// did.
+//
+// TRUNCATE rather than PASSIVE or FULL: the weaker modes leave the log file in
+// place at its high-water mark, which still reads as "there is a write-ahead
+// log here" to an operator looking at the directory, and still has to be
+// copied alongside cms.db by anybody who does not know it is empty.
+func checkpoint(conn *sqlite.Conn) Checkpoint {
+	c := Checkpoint{Ran: true}
+	err := sqlitex.ExecuteTransient(conn, "PRAGMA wal_checkpoint(TRUNCATE);", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			c.Busy = stmt.ColumnInt(0) != 0
+			c.Pages = stmt.ColumnInt(1)
+			c.Moved = stmt.ColumnInt(2)
+			return nil
+		},
+	})
+	if err != nil {
+		c.Err = fmt.Errorf("checkpointing the write-ahead log: %w", err)
+	}
+	return c
 }
 
 // prepareConn applies the per-connection settings to every connection of every
