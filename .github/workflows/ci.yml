@@ -17,9 +17,20 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # Both are JavaScript actions -- the only reason Node runs here at all.
+      # Nothing in this repository is Node; the runner executes the actions'
+      # own bundled dist/index.js. They are pinned to the current majors
+      # because v4/v5 declared the node20 runtime, which GitHub is retiring.
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      # setup-go v6 began setting GOTOOLCHAIN=local, which is why the bump past
+      # it is worth a note rather than a version number. It makes the pin below
+      # mean what it says: the toolchain installed here is the one that builds,
+      # and go will not quietly download a different one to satisfy a "go" or
+      # "toolchain" directive. If go.mod ever asks for more than the pin, this
+      # fails with a message naming both instead of building with something the
+      # workflow never mentioned -- which is the behaviour a hard floor wants.
+      - uses: actions/setup-go@v7
         with:
           # Go 1.25 is a hard floor: net/http.CrossOriginProtection arrived in
           # it and is the CSRF defence for the HTMX UI. Do not lower it.
