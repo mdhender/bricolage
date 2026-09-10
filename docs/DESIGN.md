@@ -1497,6 +1497,9 @@ cmsdb bootstrap admin --db DIR --email E --name N [--password-stdin]
 cmsdb seed            --db DIR [--demo]       roles, site, element types; reports the workflow
                                               --demo also queues one noop job to watch
 cmsdb check           --db DIR [--output DIR] integrity: FK check, orphaned resources, stuck leases
+cmsdb check           --file FILE             the same, on a database file under any name
+cmsdb backup          --db DIR --to FILE [--overwrite]
+                                              a verified snapshot, taken while the server runs
 cmsdb vacuum          --db DIR
 ```
 
@@ -1524,6 +1527,50 @@ no system user to attribute either to.
 Both are damage and both fail the check. Without `--output` it says the
 question was not asked, because "0 orphaned resources" from a check that never
 looked is the most misleading line a report could carry.
+
+`check --file FILE` runs the same checks on a database that is not `cms.db` in
+a directory somebody named with `--db`, read-only. That database is a backup,
+whose whole point is a distinguishing name with a date in it; verifying one
+used to mean moving it into a temporary directory under the expected name
+first. `--file` and `--output` are mutually exclusive: reconciling
+`published_resources` against an output tree is a question about the live
+system rather than about a snapshot of it.
+
+`backup --to FILE` writes a **consistent snapshot of a live database** and
+verifies it before giving it the name that was asked for. It is `VACUUM INTO`,
+which takes its own read transaction and reads *through* the write-ahead log —
+so nothing has to be stopped, and the result is compacted on the way out. The
+snapshot goes out through a reader connection, so it does not queue behind
+whatever the server is writing.
+
+Four rules, and each of them is a mistake somebody would otherwise make:
+
+- **The directory holding `--to` must already exist.** A backup command is
+  exactly where `mkdir -p $(dirname FILE)` looks like a courtesy, and it is the
+  same exception that turns a mistyped path into a plausible-looking empty
+  system (invariant 19).
+- **An existing `--to` is refused**, and the refusal names `--overwrite`. The
+  documented backup name carries a date, so a second deploy in one day would
+  otherwise replace the backup taken before the first attempt — which is the
+  one wanted after the second goes wrong.
+- **The file appears under the name asked for only once it is written in full
+  and checked.** It is written beside that name and renamed into it, so a crash
+  halfway leaves nothing anybody would mistake for a backup, and `--overwrite`
+  never destroys the backup already there until there is a good one to replace
+  it with.
+- **It prints the path, the size, and the `user_version`**, so the line in a
+  deploy log is evidence rather than reassurance. A backup is a file nobody
+  reads until the day it matters, and that is the wrong day to find out it is
+  zero bytes.
+
+**There is no restore command, on purpose.** Restoring is a `cp` onto
+`DIR/cms.db` with the service stopped, written out by a person who has stopped
+to think. Copying a file over a database a server is holding is not an
+operation worth making convenient, and the asymmetry is the point: the safe
+direction is the one that gets automated. What the snapshot has to be is a file
+`cmsd` can be pointed at, and it is — `VACUUM INTO` leaves it in
+rollback-journal mode, and the `OpenWAL` flag every open here names converts it
+on the way in (invariant 22).
 
 `check` reports **leases held past expiry** alongside the integrity checks, and
 a count above zero does not fail it. A stuck lease is not damage: it is what a

@@ -184,16 +184,46 @@ behaviour and not a bug to work around. The service is stopped first because
 Take the backup before the migration, not after:
 
 ```sh
-sqlite3 /opt/cms/var/cms.db ".backup '/opt/cms/backups/cms-$(date +%F).db'"
+CMS_ENV=production /opt/cms/bin/cmsdb backup \
+  --db /opt/cms/var --to "/opt/cms/backups/cms-$(date +%F).db"
 ```
 
-**With the service stopped, copying `cms.db` alone is enough.** A graceful
-shutdown checkpoints the write-ahead log back into the database file and logs
-that it did (`msg="database closed" ... wal=truncated`), so there is nothing
-left in `cms.db-wal` for the copy to miss. That is not true of a *running*
-server or of one that was killed: there, the log holds commits the database
-file does not, and a backup has to be `sqlite3 .backup` or all three of
-`cms.db`, `cms.db-wal`, and `cms.db-shm` copied as a set.
+It prints the path, the size, and the `user_version`, and it says `verified`
+only after opening what it wrote and checking it. Put that output in the deploy
+log: a backup is a file nobody reads until the day it matters, and that is the
+wrong day to find out it is zero bytes.
+
+`/opt/cms/backups` must already exist — nothing in this system creates a
+directory, and `PROVISIONING.md` §4 makes it. An existing file is refused
+rather than replaced, so a second deploy on the same day needs `--overwrite`
+and a moment's thought about which backup you would rather have.
+
+The command does not need the service stopped; it is placed here only because
+the backup belongs **before** the migration. To verify one later, name it
+directly:
+
+```sh
+CMS_ENV=production /opt/cms/bin/cmsdb check --file /opt/cms/backups/cms-2026-09-09.db
+```
+
+**Restoring is a `cp` with the service stopped**, and deliberately not a
+command:
+
+```sh
+sudo systemctl stop cms
+cp /opt/cms/backups/cms-2026-09-09.db /opt/cms/var/cms.db
+rm -f /opt/cms/var/cms.db-wal /opt/cms/var/cms.db-shm
+CMS_ENV=production /opt/cms/bin/cmsdb check --db /opt/cms/var
+sudo systemctl start cms
+```
+
+Run those as `deploy`, which owns `/opt/cms` and is the account the unit runs
+as. Remove the write-ahead log and its index along with the database: they
+belong to the one being replaced, and leaving them beside a different one is
+the one way to turn a good backup into a corrupt database. The `check` before
+starting is what tells you the restore landed — including that `user_version`
+matches the binary in `/opt/cms/bin`, which it will not if you restored across
+a migration.
 
 Migrations are append-only after beta. Until then a squash is a deliberate,
 separately announced event — and on a database that has been deployed, it is a

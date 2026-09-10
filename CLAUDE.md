@@ -111,7 +111,8 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 M0 through M13 are complete, and M14 (issue #6, invite-only registration) is in
 beside them. `cmsdb` can `init`, `migrate status`,
 `migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
-`check [--output DIR]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
+`check [--db DIR --output DIR | --file FILE]`,
+`backup --db DIR --to FILE [--overwrite]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
 §13.4, and serves the session, identity, grant, document, version, diff,
 history, transition, workflow, assignment, due-date, queue, job, site,
