@@ -52,7 +52,7 @@ fmt:
 	fi
 
 ## lint: the greps that catch the rules nobody notices breaking.
-lint: no-mkdir no-dev-routes one-state-writer no-version-writes
+lint: no-mkdir no-dev-routes one-state-writer no-version-writes one-clock
 
 ## no-mkdir: nothing creates a directory it was told to use (invariant 19).
 ##
@@ -79,6 +79,28 @@ no-mkdir:
 		echo "$$callers"; exit 1; \
 	fi
 	$(GO) test -run 'TestNewTreeNeverCreatesItsRoot|TestNothingCreatesADirectory' ./internal/publish/ ./internal/store/
+
+## one-clock: time.Now() appears only in internal/clock (invariant 3).
+##
+## Everything else takes a Clock, which is what makes leases, schedules, and
+## due dates testable at an arbitrary instant rather than at whatever instant
+## the test happened to run.
+##
+## The grep is stricter than invariant 3's wording, and deliberately left that
+## way. The invariant permits time.Now() in main as well; main does not use it,
+## reaching for clock.Real{} instead, so that the real clock enters the program
+## through the same type the fake one substitutes for. Nothing is gained by
+## carving out an exemption nothing takes, and a grep with no exceptions is a
+## grep nobody has to reason about.
+##
+## Tests are excluded: a test that constructs a deadline relative to now is
+## asking a different question from the code under test, which still takes the
+## clock it was handed.
+one-clock:
+	@if grep -rn 'time\.Now()' ./cmd ./internal --include='*.go' \
+		| grep -v '^\./internal/clock/' | grep -v '_test\.go:'; then \
+		echo "lint: time.Now() belongs in main and internal/clock (invariant 3)"; exit 1; \
+	fi
 
 ## no-version-writes: nothing writes PRAGMA user_version (invariant 21).
 ##

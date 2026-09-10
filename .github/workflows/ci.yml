@@ -89,14 +89,6 @@ jobs:
             echo "pkg/way is deleted; the route table is net/http.ServeMux patterns"; exit 1
           fi
 
-      # Invariant 3. What makes leases, schedules, and due dates testable.
-      - name: time.Now lives in main and internal/clock only
-        run: |
-          if grep -rn 'time\.Now()' ./cmd ./internal --include='*.go' \
-             | grep -v '^\./internal/clock/' | grep -v '_test\.go:'; then
-            echo "time.Now() belongs in main and internal/clock (invariant 3)"; exit 1
-          fi
-
       # Invariant 21, and what invariant 9 protects now that the beta squash
       # permission is withdrawn. PRAGMA user_version is sqlitemigration's: its
       # value is the number of migrations applied, and applying one is the only

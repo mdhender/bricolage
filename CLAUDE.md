@@ -34,16 +34,17 @@ go test -run TestResolve ./internal/config/  # one test
 go test -tags production ./internal/buildenv/   # the tagged half of the interlock
 ```
 
-`make lint` is greps, not a linter binary: nothing may call `os.Mkdir`/
-`os.MkdirAll` (invariant 19); only `internal/web/devroutes` may register a
-`/__development/` pattern, with exactly one caller of `devroutes.Register`
-(invariant 16); and `documents.state` is written by one statement, in
-`internal/store/workflow.go`, whose `ApplyTransition` has one caller, in
-`internal/workflow` (invariants 2 and 4); and nothing writes
+`make lint` is greps, not a linter binary, and it is the whole list: nothing
+may call `os.Mkdir`/`os.MkdirAll` (invariant 19); only `internal/web/devroutes`
+may register a `/__development/` pattern, with exactly one caller of
+`devroutes.Register` (invariant 16); `documents.state` is written by one
+statement, in `internal/store/workflow.go`, whose `ApplyTransition` has one
+caller, in `internal/workflow` (invariants 2 and 4); nothing writes
 `PRAGMA user_version`, in Go or in a migration, the two test helpers that
 manufacture a database at the wrong version being the named exception
-(invariant 21). CI adds a fifth: `time.Now()` appears only in `main` and
-`internal/clock` (invariant 3).
+(invariant 21); and `time.Now()` appears only in `internal/clock`
+(invariant 3). CI adds nothing of its own: it runs the same targets, so a
+gate that passes on a laptop passes there.
 
 `make release` cross-compiles for linux/amd64 with `-tags production`. Never run
 it as a side effect of another task, and never deploy.
