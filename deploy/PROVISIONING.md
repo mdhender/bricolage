@@ -374,16 +374,37 @@ store, which turns a certificate question into an afternoon.
 
 Two things are state, and they are not the same kind of thing.
 
-`/opt/cms/var/cms.db` is the system of record. Back it up with SQLite's own
-backup, not `cp` — a copy taken while the write-ahead log is live is a torn
-database, and it will restore without complaining:
+`/opt/cms/var/cms.db` is the system of record. Back it up with `cmsdb backup`,
+not `cp` — a copy taken while the write-ahead log is live is a torn database,
+and it will restore without complaining:
 
 ```sh
-sqlite3 /opt/cms/var/cms.db ".backup '/opt/cms/backups/cms-$(date +%F).db'"
+CMS_ENV=production /opt/cms/bin/cmsdb backup \
+  --db /opt/cms/var --to "/opt/cms/backups/cms-$(date +%F).db"
 ```
 
-That is safe against a running server. Get it off the droplet: a backup on the
-same disk as the thing it is backing up is a copy, not a backup.
+That is safe against a running server, which is the point: it is `VACUUM INTO`,
+so it takes its own read transaction and reads *through* the write-ahead log
+rather than around it. Nothing has to be stopped, and the snapshot comes out
+compacted.
+
+`sqlite3` is deliberately not used and deliberately not installed. `cmsdb` is
+already here, already knows the database is `DIR/cms.db`, and already refuses
+to open one whose `application_id` is not `CMS0`; pointed at the wrong
+directory, `sqlite3 .backup` writes a zero-byte file and exits 0.
+
+`cmsdb backup` refuses an existing `--to` unless given `--overwrite`, and it
+verifies what it wrote before giving it the name asked for — so a file in
+`/opt/cms/backups` is a backup that opened and passed `integrity_check`, not
+just a file that appeared. Check an older one whenever you want to:
+
+```sh
+CMS_ENV=production /opt/cms/bin/cmsdb check --file /opt/cms/backups/cms-2026-09-09.db
+```
+
+Get them off the droplet: a backup on the same disk as the thing it is backing
+up is a copy, not a backup. Restoring is in `README.md`, under "Deploying a new
+version" — a `cp` with the service stopped, and deliberately not a command.
 
 `/opt/cms/output` is the published tree, and it is reproducible — every file in
 it is claimed by a row in `published_resources`. Back it up if regenerating it
@@ -395,6 +416,8 @@ reports the two opposite orphans — rows whose file is gone, files no row claim
 `/opt/cms/preview` is a cache. Content-addressed, regenerated on demand, and
 not worth a backup.
 
-`cmsdb vacuum` and `cmsdb check` both want the database to themselves. Run them
-with the service stopped, or accept that they will contend with it for the
-write lock.
+`cmsdb vacuum` rewrites the whole file in one write transaction, so it wants
+the database to itself: run it with the service stopped, or accept that it will
+contend with the server for the write lock. `cmsdb backup` and `cmsdb check`
+only read — they take a reader and never begin a write transaction — so neither
+needs an outage.

@@ -4,7 +4,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -103,53 +106,111 @@ func (v ForeignKeyViolation) String() string {
 // (invariant 3): "cmsdb check" holds the real clock and hands it down, and a
 // test can ask what the check would have said an hour later.
 func (db *DB) Check(ctx context.Context, now time.Time) (*CheckReport, error) {
-	report := &CheckReport{Path: db.path, Migrations: migrate.Count()}
-
+	var report *CheckReport
 	err := db.Read(ctx, func(conn *sqlite.Conn) error {
 		var err error
-		if report.AppID, err = pragmaInt32(conn, "application_id"); err != nil {
-			return err
-		}
-		if report.SchemaVersion, err = pragmaInt32(conn, "user_version"); err != nil {
-			return err
-		}
-
-		err = sqlitex.ExecuteTransient(conn, "PRAGMA foreign_key_check;", &sqlitex.ExecOptions{
-			ResultFunc: func(stmt *sqlite.Stmt) error {
-				report.ForeignKeyViolations = append(report.ForeignKeyViolations, ForeignKeyViolation{
-					Table:  stmt.ColumnText(0),
-					RowID:  stmt.ColumnInt64(1),
-					Parent: stmt.ColumnText(2),
-					FKID:   stmt.ColumnInt64(3),
-				})
-				return nil
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("foreign_key_check: %w", err)
-		}
-
-		err = sqlitex.ExecuteTransient(conn, "PRAGMA integrity_check;", &sqlitex.ExecOptions{
-			ResultFunc: func(stmt *sqlite.Stmt) error {
-				// A sound database answers with the single row "ok".
-				if line := strings.TrimSpace(stmt.ColumnText(0)); line != "ok" && line != "" {
-					report.IntegrityProblems = append(report.IntegrityProblems, line)
-				}
-				return nil
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("integrity_check: %w", err)
-		}
-
-		// The application-level check DESIGN.md 11 asks for. The query lives
-		// beside the rest of the queue's SQL, in jobs.go, so that there is one
-		// statement of what "stuck" means.
-		report.StuckJobLeases, err = stuckLeases(conn, now)
+		report, err = checkConn(conn, db.path, now)
 		return err
 	})
 	if err != nil {
 		return nil, fmt.Errorf("checking %q: %w", db.path, err)
+	}
+	return report, nil
+}
+
+// CheckFile runs the same checks against a database file directly, without the
+// DIR/cms.db convention every other entry point here uses.
+//
+// It exists for the one database in this system that is not called cms.db in a
+// directory somebody named with --db: a backup, whose whole point is a
+// distinguishing name with a date in it (#10). Verifying one used to mean
+// moving it into a temporary directory under the expected name first.
+//
+// The connection is read-only and the journal mode is not checked. A file
+// written by VACUUM INTO comes out in rollback-journal mode whatever the
+// source was in, so requiring WAL here — as Open does, for a database this
+// system is about to serve from — would reject every backup it takes.
+func CheckFile(ctx context.Context, path string, now time.Time) (*CheckReport, error) {
+	if path == "" {
+		return nil, errors.New("no database file given")
+	}
+	// Stat first, so that a missing file is a message naming it rather than
+	// SQLITE_CANTOPEN or, worse, NotFoundError's advice to run "cmsdb init"
+	// against a directory nobody asked about.
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("database file %q: %w", path, err)
+	}
+
+	conn, err := sqlite.OpenConn(path, readFlags)
+	if err != nil {
+		return nil, fmt.Errorf("opening %q: %w", path, err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := prepareConn(conn, DefaultBusyTimeout); err != nil {
+		return nil, fmt.Errorf("opening %q: %w", path, err)
+	}
+
+	// The two markers, refused rather than merely reported: a file that is not
+	// this system's database gets the same message here as it would from any
+	// other cmsdb command, because it is the same check (DESIGN.md 13.4).
+	if _, err := verify(conn, filepath.Dir(path), path, RequireExact); err != nil {
+		return nil, err
+	}
+
+	report, err := checkConn(conn, path, now)
+	if err != nil {
+		return nil, fmt.Errorf("checking %q: %w", path, err)
+	}
+	return report, nil
+}
+
+// checkConn is the whole of a check, on one connection. Check and CheckFile
+// differ in where the connection comes from and in nothing else, so the
+// statements live here once.
+func checkConn(conn *sqlite.Conn, path string, now time.Time) (*CheckReport, error) {
+	report := &CheckReport{Path: path, Migrations: migrate.Count()}
+
+	var err error
+	if report.AppID, err = pragmaInt32(conn, "application_id"); err != nil {
+		return nil, err
+	}
+	if report.SchemaVersion, err = pragmaInt32(conn, "user_version"); err != nil {
+		return nil, err
+	}
+
+	err = sqlitex.ExecuteTransient(conn, "PRAGMA foreign_key_check;", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			report.ForeignKeyViolations = append(report.ForeignKeyViolations, ForeignKeyViolation{
+				Table:  stmt.ColumnText(0),
+				RowID:  stmt.ColumnInt64(1),
+				Parent: stmt.ColumnText(2),
+				FKID:   stmt.ColumnInt64(3),
+			})
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("foreign_key_check: %w", err)
+	}
+
+	err = sqlitex.ExecuteTransient(conn, "PRAGMA integrity_check;", &sqlitex.ExecOptions{
+		ResultFunc: func(stmt *sqlite.Stmt) error {
+			// A sound database answers with the single row "ok".
+			if line := strings.TrimSpace(stmt.ColumnText(0)); line != "ok" && line != "" {
+				report.IntegrityProblems = append(report.IntegrityProblems, line)
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("integrity_check: %w", err)
+	}
+
+	// The application-level check DESIGN.md 11 asks for. The query lives
+	// beside the rest of the queue's SQL, in jobs.go, so that there is one
+	// statement of what "stuck" means.
+	if report.StuckJobLeases, err = stuckLeases(conn, now); err != nil {
+		return nil, err
 	}
 	return report, nil
 }

@@ -136,25 +136,52 @@ func newMigrateUpCmd() *cobra.Command {
 }
 
 func newCheckCmd() *cobra.Command {
-	var dir, output string
+	var dir, file, output string
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Check integrity, foreign keys, leases, and orphaned resources",
-		Args:  cobra.NoArgs,
+		Long: "Check integrity, foreign keys, leases, and orphaned resources.\n\n" +
+			"--db DIR checks DIR/cms.db, the database this system serves from.\n" +
+			"--file FILE checks a database file under any name, which is what a\n" +
+			"backup is: verifying one used to mean moving it into a directory\n" +
+			"under the expected name first.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			db, err := store.Open(cmd.Context(), dir, store.Options{})
-			if err != nil {
-				return err
+			if (dir == "") == (file == "") {
+				return errors.New("give exactly one of --db DIR and --file FILE")
 			}
-			defer db.Close()
 
 			// The one place outside internal/clock that reads the wall clock
 			// is main, and this is one of them: a lease is judged expired
 			// against an instant, and the instant is constructed here and
 			// handed down (invariant 3).
-			report, err := db.Check(cmd.Context(), clock.Real{}.Now())
-			if err != nil {
-				return err
+			now := clock.Real{}.Now()
+
+			// db stays nil for --file. A file under any name is read without
+			// the DIR/cms.db convention and without opening a writer, and
+			// nothing else this command does applies to one: reconciling
+			// published_resources against an output tree is a question about
+			// the live system rather than about a snapshot of it, which is why
+			// --file and --output are mutually exclusive.
+			var db *store.DB
+			var report *store.CheckReport
+			var err error
+			if file != "" {
+				report, err = store.CheckFile(cmd.Context(), file, now)
+				if err != nil {
+					return err
+				}
+			} else {
+				db, err = store.Open(cmd.Context(), dir, store.Options{})
+				if err != nil {
+					return err
+				}
+				defer db.Close()
+
+				report, err = db.Check(cmd.Context(), now)
+				if err != nil {
+					return err
+				}
 			}
 
 			// The half of the check that is not in the database
@@ -165,7 +192,7 @@ func newCheckCmd() *cobra.Command {
 			// "0 orphaned resources" from a check that never looked is the
 			// most misleading line a report could carry.
 			var reconciled bool
-			if output != "" {
+			if output != "" && db != nil {
 				tree, err := publish.NewTree(output)
 				if err != nil {
 					return err
@@ -219,9 +246,13 @@ func newCheckCmd() *cobra.Command {
 			return nil
 		},
 	}
-	addDBFlag(cmd, &dir)
+	cmd.Flags().StringVar(&dir, "db", "", "directory holding cms.db; it must already exist")
+	cmd.Flags().StringVar(&file, "file", "",
+		"database file to check under any name, such as a backup; read-only")
+	cmd.MarkFlagsMutuallyExclusive("db", "file")
 	cmd.Flags().StringVar(&output, "output", "",
 		"directory published files were written beneath; without it the output tree is not checked")
+	cmd.MarkFlagsMutuallyExclusive("file", "output")
 	return cmd
 }
 
