@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -177,6 +178,83 @@ func TestBackupRefusals(t *testing.T) {
 		_, stderr, code = run(t, cmsdb, nil, "check", "--db", dir, "--file", filepath.Join(backups, "twice.db"))
 		if code == 0 {
 			t.Errorf("cmsdb check accepted both --db and --file\nstderr: %s", stderr)
+		}
+	})
+}
+
+// TestBackupAcrossAPendingMigration is issue #25 as it was actually met: the
+// deploy of 0.17.0-beta to the rehearsal droplet, where the binaries were
+// already uploaded and the backup step refused with the service stopped.
+//
+// The deploy order moved so that the question does not come up (#26), and this
+// is the other half of the answer: it should not have been a question. A
+// backup is a copy of a file. What it has to agree with the file about is the
+// application ID.
+func TestBackupAcrossAPendingMigration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds three binaries")
+	}
+	bin := buildCommands(t, t.TempDir())
+	cmsdb := bin["cmsdb"]
+	dir := initDB(t, cmsdb)
+	db := filepath.Join(dir, "cms.db")
+	backups := t.TempDir()
+
+	current := versionOf(t, db)
+	if current < 2 {
+		t.Skip("needs at least two migrations to have a version to be behind")
+	}
+	behind := current - 1
+
+	// The database an operator has mid-deploy: new binaries in place, schema
+	// still at the version the old ones left.
+	setVersion(t, db, behind)
+
+	t.Run("the backup is taken and reports the schema in the file", func(t *testing.T) {
+		to := filepath.Join(backups, "pre-migration.db")
+		stdout, stderr, code := run(t, cmsdb, nil, "backup", "--db", dir, "--to", to)
+		if code != 0 {
+			t.Fatalf("backup across a pending migration exited %d\nstderr: %s", code, stderr)
+		}
+		if !strings.Contains(stdout, "verified") {
+			t.Errorf("the backup was not verified\nstdout: %s", stdout)
+		}
+		want := fmt.Sprintf("user_version: %d", behind)
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout does not report %q, which is what somebody restoring it needs\nstdout: %s",
+				want, stdout)
+		}
+		if info, err := os.Stat(to); err != nil {
+			t.Fatalf("the backup file: %v", err)
+		} else if info.Size() == 0 {
+			t.Error("the backup is zero bytes")
+		}
+	})
+
+	t.Run("and the backup can be read back", func(t *testing.T) {
+		to := filepath.Join(backups, "readable.db")
+		if _, stderr, code := run(t, cmsdb, nil, "backup", "--db", dir, "--to", to); code != 0 {
+			t.Fatalf("backup: %s", stderr)
+		}
+		stdout, stderr, code := run(t, cmsdb, nil, "check", "--file", to)
+		if code != 0 {
+			t.Fatalf("check --file on a backup taken at an older schema exited %d\nstderr: %s", code, stderr)
+		}
+		if !strings.Contains(stdout, "ok") {
+			t.Errorf("the backup does not check out\nstdout: %s", stdout)
+		}
+	})
+
+	t.Run("serving still refuses the same database", func(t *testing.T) {
+		// The policy is per-operation, not global. cmsd interprets rows, so
+		// invariant 21 is untouched by any of this.
+		_, stderr, code := run(t, bin["cmsd"], nil, "serve", "--db", dir,
+			"--addr", "127.0.0.1:0", "--timeout", "5s")
+		if code == 0 {
+			t.Fatal("cmsd started against a database at the wrong version")
+		}
+		if !strings.Contains(stderr, "user_version") {
+			t.Errorf("the refusal does not name the version\nstderr: %s", stderr)
 		}
 	})
 }

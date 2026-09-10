@@ -193,24 +193,18 @@ CMS_ENV=production /opt/cms/bin/cmsdb migrate up --db /opt/cms/var
 sudo systemctl start cms
 ```
 
-**The order is the point, and three separate things fix it in place.**
+**The order is the point, and three separate reasons hold it in place.**
 
-*The backup is taken before the upload because a backup is taken by a binary
-that agrees with the database.* `cmsdb backup` opens the database the way every
-other `cmsdb` subcommand does, which requires `PRAGMA user_version` to equal the
-number of migrations that binary embeds. The binary already on the server
-matches the database already on the server; the new one does not, and will not
-until `migrate up` has run. Upload first and the backup step refuses —
-
-```
-cmsdb: database "/opt/cms/var/cms.db": user_version is 13, expected 14, which is
-the number of migrations this binary embeds: run "cmsdb migrate up --db ..."
-```
-
-— with the service already down, which is the worst moment to be improvising.
-Taking it first is not a workaround for that refusal; it is the arrangement in
-which the question never comes up. Whether `backup` should ask the question at
-all is issue #25, and this order does not depend on the answer.
+*The backup is taken before the upload because it should not depend on which
+binaries happen to be in place.* This step used to come after the upload, and
+on the first deploy that carried a migration it refused: `cmsdb backup` demanded
+that the schema version match the number of migrations the binary embedded, and
+uploading first is what made those disagree. That refusal is gone — `backup` now
+asks only whether the file is this system's database (issue #25) — so either
+order would work today. It stays here because the backup you want is of the
+database as it is, taken before anything else on the machine has moved, and
+because a step whose success depends on the order of two other steps is a step
+that will fail again for a new reason.
 
 *The service is stopped before the backup so that the file is exactly the state
 the migration is about to act on.* `backup` does not need the service stopped —
@@ -247,11 +241,17 @@ To verify a backup later, name it directly:
 CMS_ENV=production /opt/cms/bin/cmsdb check --file /opt/cms/backups/cms-2026-09-09.db
 ```
 
-That works on a backup taken at the schema the current binaries embed, and
-**not** on an older one: `check --file` applies the same version rule, so a
-backup taken before the last migration is refused rather than read. It is the
-other half of issue #25, and this deploy order does not route around it —
-keep the binary that made a backup if you expect to want to read it.
+That works on a backup taken at any schema, including one older than the
+binaries reading it (issue #25). `backup` and `check --file` ask whether the
+file is this system's database and whether SQLite finds it sound; which schema
+is inside it is reported rather than required. A backup outlives the binaries
+that made it, and the file whose whole purpose is to be readable on the worst
+day should not need a build that embeds exactly as many migrations as it did.
+
+On a schema older than the queue — migration 0008 — the line reads
+`stuck job leases: not checked (this schema predates the queue)` rather than
+zero. It is not a fault; it is the check declining to report a number it could
+not ask for.
 
 **Restoring is a `cp` with the service stopped**, and deliberately not a
 command:

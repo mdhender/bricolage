@@ -1516,7 +1516,8 @@ cmsdb init            --db DIR                create DIR/cms.db, apply all migra
 cmsdb migrate status  --db DIR                show applied/pending
 cmsdb migrate up      --db DIR [--to N]       apply pending migrations
 cmsdb bootstrap admin --db DIR --email E --name N [--password-stdin]
-cmsdb seed            --db DIR [--demo]       roles, site, element types; reports the workflow
+cmsdb seed            --db DIR [--demo] [--site-domain HOST]
+                                              roles, site, element types; reports the workflow
                                               --demo also queues one noop job to watch
 cmsdb check           --db DIR [--output DIR] integrity: FK check, orphaned resources, stuck leases
 cmsdb check           --file FILE             the same, on a database file under any name
@@ -1531,6 +1532,21 @@ failure naming the directory, in every subcommand including `init`. `init` is
 the only subcommand permitted to create the database file, and it stamps the
 application ID `0x434D5330` while applying migrations; every other subcommand
 opens an existing database and fails if the application ID does not match.
+
+**How much the schema version has to match depends on what the subcommand is
+about to do**, and the application ID never negotiates. A subcommand that reads
+rows needs to know what the columns mean, so it requires the version to equal
+the number of migrations the binary embeds — that is `check --db`, and it is
+invariant 21 for `cmsd`. `migrate status` and `migrate up` accept a database
+that is behind, since reporting and applying pending migrations is their whole
+job. **`backup` and `check --file` accept any version**, because they copy and
+inspect a *file* and interpret none of its rows (issue #25): a backup outlives
+the binaries that made it, and demanding agreement made the command refuse the
+database a deploy carrying a migration exists to back up. The version is read
+and reported in both, because which schema is in a file is what somebody
+restoring it needs to know. On a schema older than migration 0008 the stuck-lease
+count is reported as not checked rather than as zero — there is no queue to have
+any, and that is a different answer.
 
 `bootstrap admin` reads a password from stdin, or generates one and prints it
 **once** to stdout. It never accepts a password as a command-line flag —

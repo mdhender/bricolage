@@ -200,6 +200,22 @@ and `UNIQUE (site_id, path)`; the subtree rewrite a move performs is one
 `UPDATE` whose prefix test is `SUBSTR` and not `LIKE`, because a directory name
 may contain `%` or `_`.
 
+**How much the schema version has to match is a property of the operation, not
+of the system.** The application ID never negotiates: a file that is not this
+system's database is refused whatever is being done to it. The version is a
+different question, and `store.VersionPolicy` has the three answers.
+`RequireExact` is for anything that reads rows — `cmsd` (invariant 21) and
+`cmsdb check --db` — because reading a row means knowing what its columns mean.
+`AllowBehind` is `migrate status` and `migrate up`, whose job is the gap.
+`AnyVersion` is `cmsdb backup` and `cmsdb check --file`, which copy and inspect
+a file and interpret nothing in it (issue #25); it is the one place *ahead* is
+accepted too, because copying a newer file with an older `cmsdb` produces a
+correct copy of a newer file. Both report the version they found, since which
+schema is in a file is what somebody restoring it needs to know — and on a
+schema older than migration 0008 the stuck-lease count reports as not checked
+rather than as zero, because no queue to have any is a different answer from
+none.
+
 A site's domain is mutable, and it is the only mutable name that is also a
 path. It is the host every URL of the site is built on and the first path
 segment of the template tree, so `PATCH /api/v1/sites/{uid}` (`earl site

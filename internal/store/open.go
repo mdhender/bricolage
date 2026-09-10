@@ -39,22 +39,44 @@ const (
 )
 
 // VersionPolicy says what a caller makes of a database whose schema version is
-// behind the binary.
+// not the one this binary was built against.
 //
-// A database ahead of the binary is always an error, under either policy: the
-// binary is older than the database, and no amount of migrating forward
-// repairs that.
+// The application ID is checked under every policy and is never negotiable: a
+// file that is not this system's database is refused whatever is being done to
+// it. What the policy decides is how much the *version* has to agree, and the
+// answer depends on whether the caller is about to interpret rows.
 type VersionPolicy int
 
 const (
 	// RequireExact rejects anything but an exact match. This is cmsd
-	// (invariant 21) and every cmsdb subcommand that reads the schema.
+	// (invariant 21) and every cmsdb subcommand that reads the schema, because
+	// reading a row means knowing what its columns mean.
 	RequireExact VersionPolicy = iota
 
 	// AllowBehind accepts a database with migrations pending, so that
 	// "cmsdb migrate status" can report them and "cmsdb migrate up" can apply
-	// them. Nothing else uses it.
+	// them. It still refuses one that is ahead: the binary is older than the
+	// database, and no amount of migrating forward repairs that.
 	AllowBehind
+
+	// AnyVersion checks the application ID and nothing else (issue #25).
+	//
+	// It is for the operations that copy or inspect a *file* rather than
+	// interpret its rows: "cmsdb backup", which is a VACUUM INTO, and
+	// "cmsdb check --file", which asks SQLite whether a file is sound. Neither
+	// reads a column whose meaning depends on the schema version, so neither
+	// has any business demanding one -- and demanding it made backup refuse
+	// the database the deploy procedure exists to back up, since on a deploy
+	// carrying a migration the binary and the database disagree by
+	// construction.
+	//
+	// Ahead is accepted here as well as behind, which is the one place in this
+	// system that accepts it. Copying a newer file with an older cmsdb
+	// produces a correct copy of a newer file; refusing it would be the same
+	// mistake as refusing an older one, pointing the other way. The version is
+	// still read and still reported, because which schema is in the file is
+	// exactly what somebody restoring it needs to know.
+	AnyVersion
 )
 
 // Options are the knobs on Open. The zero value is what cmsd wants: an exact
@@ -305,6 +327,7 @@ func verify(conn *sqlite.Conn, dir, path string, policy VersionPolicy) (int32, e
 	}
 	want := int32(migrate.Count())
 	switch {
+	case policy == AnyVersion:
 	case version == want:
 	case version < want && policy == AllowBehind:
 	default:

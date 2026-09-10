@@ -223,7 +223,14 @@ func newCheckCmd() *cobra.Command {
 			// A stuck lease is reported and does not fail the check: it is
 			// what a worker that died looks like from the outside, and the
 			// queue recovers on its own when the lease expires.
-			fmt.Fprintf(out, "stuck job leases: %d\n", report.StuckJobLeases)
+			if report.QueueChecked {
+				fmt.Fprintf(out, "stuck job leases: %d\n", report.StuckJobLeases)
+			} else {
+				// A schema older than migration 0008 has no queue. Reporting
+				// zero would be a number that means "none" when it means "not
+				// asked" (issue #25).
+				fmt.Fprintln(out, "stuck job leases: not checked (this schema predates the queue)")
+			}
 			if !reconciled {
 				fmt.Fprintln(out, "orphaned resources: not checked (give --output DIR)")
 			} else {

@@ -47,6 +47,16 @@ type CheckReport struct {
 	// not restart it.
 	StuckJobLeases int
 
+	// QueueChecked says whether StuckJobLeases was answered at all.
+	//
+	// It is false on a database whose schema predates the queue, which
+	// migration 0008 created — reachable now that CheckFile reads a file at
+	// any version (issue #25). The flag exists rather than letting the count
+	// stand at zero because "no stuck leases" and "no queue to have any" are
+	// different answers, and a check that reported the first when it meant the
+	// second would be the quiet wrong number this command exists to avoid.
+	QueueChecked bool
+
 	// OrphanedResources is how many ways the output tree and
 	// published_resources disagree: rows whose file is gone plus files no row
 	// claims (PLAN.md M9 acceptance 7).
@@ -130,6 +140,14 @@ func (db *DB) Check(ctx context.Context, now time.Time) (*CheckReport, error) {
 // written by VACUUM INTO comes out in rollback-journal mode whatever the
 // source was in, so requiring WAL here — as Open does, for a database this
 // system is about to serve from — would reject every backup it takes.
+//
+// The version is read and reported and not required to match (AnyVersion,
+// issue #25). A backup outlives the binaries that made it: the file whose
+// whole purpose is to be readable on the worst day was, until this, readable
+// only by a build that embeds exactly as many migrations as the database had
+// when it was taken. What is asked of the file is that it be this system's
+// database and that SQLite find it sound; which schema is inside it is an
+// answer, printed in the report, rather than a condition.
 func CheckFile(ctx context.Context, path string, now time.Time) (*CheckReport, error) {
 	if path == "" {
 		return nil, errors.New("no database file given")
@@ -153,7 +171,7 @@ func CheckFile(ctx context.Context, path string, now time.Time) (*CheckReport, e
 	// The two markers, refused rather than merely reported: a file that is not
 	// this system's database gets the same message here as it would from any
 	// other cmsdb command, because it is the same check (DESIGN.md 13.4).
-	if _, err := verify(conn, filepath.Dir(path), path, RequireExact); err != nil {
+	if _, err := verify(conn, filepath.Dir(path), path, AnyVersion); err != nil {
 		return nil, err
 	}
 
@@ -209,10 +227,40 @@ func checkConn(conn *sqlite.Conn, path string, now time.Time) (*CheckReport, err
 	// The application-level check DESIGN.md 11 asks for. The query lives
 	// beside the rest of the queue's SQL, in jobs.go, so that there is one
 	// statement of what "stuck" means.
-	if report.StuckJobLeases, err = stuckLeases(conn, now); err != nil {
+	//
+	// Asked only when there is a queue to ask about. A file at a schema older
+	// than migration 0008 has no jobs table, and "no such table" is neither a
+	// fault in the file nor anything the person holding it can act on
+	// (issue #25).
+	switch present, err := tableExists(conn, "jobs"); {
+	case err != nil:
 		return nil, err
+	case present:
+		if report.StuckJobLeases, err = stuckLeases(conn, now); err != nil {
+			return nil, err
+		}
+		report.QueueChecked = true
 	}
 	return report, nil
+}
+
+// tableExists reports whether the schema carries a table by that name.
+//
+// It reads sqlite_schema rather than trying the query and interpreting the
+// failure: "no such table" is a message, and a caller that greps a message is
+// the mistake invariant 11 names, one layer up.
+func tableExists(conn *sqlite.Conn, name string) (bool, error) {
+	found := false
+	err := sqlitex.Execute(conn,
+		`SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?;`,
+		&sqlitex.ExecOptions{
+			Args:       []any{name},
+			ResultFunc: func(*sqlite.Stmt) error { found = true; return nil },
+		})
+	if err != nil {
+		return false, fmt.Errorf("looking for the %s table: %w", name, err)
+	}
+	return found, nil
 }
 
 // Vacuum rebuilds the database file, reclaiming space.
