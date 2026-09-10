@@ -186,6 +186,7 @@ func Register(mux Mux, deps Deps) {
 	// "/features/film/" is what a grant carries and what a URI is built from,
 	// and UNIQUE (site_id, path) is what makes it a lookup key.
 	handle("GET "+Prefix+"sites", h.authenticated(h.listSites))
+	handle("PATCH "+Prefix+"sites/{uid}", h.authenticated(h.patchSite))
 	handle("GET "+Prefix+"categories", h.authenticated(h.listCategories))
 	handle("POST "+Prefix+"categories", h.authenticated(h.createCategory))
 	handle("GET "+Prefix+"categories/{uid}", h.authenticated(h.showCategory))

@@ -514,3 +514,37 @@ func (h *Handler) listSites(w http.ResponseWriter, r *http.Request, identity dom
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
 }
+
+// siteRequest is the body of PATCH /api/v1/sites/{uid} (issue #3).
+//
+// Both fields are pointers because an omitted field and an empty one are
+// different requests, which is the rule every PATCH in this API follows.
+type siteRequest struct {
+	Name   *string `json:"name,omitempty"`
+	Domain *string `json:"domain,omitempty"`
+}
+
+// patchSite changes a site's name or its domain.
+//
+// The route names the uid rather than the id (invariant 10). That the listing
+// beside it still carries an integer is the wart siteResponse describes: "site":
+// 1 is what POST /documents has taken since M3, and this route is not the place
+// to half-rename it. What it does not do is add to it.
+func (h *Handler) patchSite(w http.ResponseWriter, r *http.Request, identity domain.Identity) {
+	var req siteRequest
+	if err := decodeJSON(r, &req); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	site, err := h.svc.UpdateSite(r.Context(), identity, r.PathValue("uid"), service.SiteUpdate{
+		Name:   req.Name,
+		Domain: req.Domain,
+	})
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, siteResponse{
+		ID: site.ID, UID: site.UID, Name: site.Name, Domain: site.Domain, Active: site.Active,
+	})
+}

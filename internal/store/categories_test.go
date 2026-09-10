@@ -473,3 +473,65 @@ func TestCategorySubtree(t *testing.T) {
 		t.Errorf("a sibling sharing a prefix joined the subtree: %v", got)
 	}
 }
+
+// TestSiteDomainIsUnique is migration 0014: a domain a site already holds is
+// refused by SQLite rather than by care (issue #3).
+//
+// It matters because the domain is the first path segment of the template tree
+// and the host half of every published URL. Two sites claiming one would be a
+// template lookup with two answers -- and SiteByDomain, which is what
+// "cmsdb seed" asks before it creates anything, would fail with "more than one
+// row" against a database whose only fault was a rename.
+func TestSiteDomainIsUnique(t *testing.T) {
+	f := newDocFixture(t)
+
+	second, err := f.db.CreateSite(t.Context(), NewSite{
+		UID: ids.MustNew(f.now), Name: "Second", Domain: "second.example.com",
+	})
+	if err != nil {
+		t.Fatalf("CreateSite: %v", err)
+	}
+
+	site, err := f.db.SiteByID(t.Context(), second)
+	if err != nil {
+		t.Fatalf("SiteByID: %v", err)
+	}
+	site.Domain = "example.com"
+	_, err = f.db.UpdateSite(t.Context(), site, domain.Event{})
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("renaming onto another site's domain = %v, want conflict", err)
+	}
+	if ce, ok := AsConstraint(err); !ok || !ce.IsUnique() {
+		t.Errorf("the refusal is %v; it has to be classified by result code (invariant 11)", err)
+	}
+
+	// A second row created on the taken domain is refused by the same index,
+	// which is what keeps the constraint true for the writer that predates
+	// the rename.
+	if _, err := f.db.CreateSite(t.Context(), NewSite{
+		UID: ids.MustNew(f.now), Name: "Third", Domain: "example.com",
+	}); !errors.Is(err, domain.ErrConflict) {
+		t.Errorf("a second site created on a taken domain = %v, want conflict", err)
+	}
+}
+
+// TestSiteByUID is the read the PATCH route needs, since a route may not name
+// a primary key (invariant 10).
+func TestSiteByUID(t *testing.T) {
+	f := newDocFixture(t)
+
+	site, err := f.db.SiteByID(t.Context(), f.siteID)
+	if err != nil {
+		t.Fatalf("SiteByID: %v", err)
+	}
+	got, err := f.db.SiteByUID(t.Context(), site.UID)
+	if err != nil {
+		t.Fatalf("SiteByUID(%q): %v", site.UID, err)
+	}
+	if got != site {
+		t.Errorf("SiteByUID = %+v, want %+v", got, site)
+	}
+	if _, err := f.db.SiteByUID(t.Context(), "00000000000000000000000000"); !errors.Is(err, domain.ErrNotFound) {
+		t.Errorf("SiteByUID on a uid nothing holds = %v, want not found", err)
+	}
+}

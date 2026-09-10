@@ -423,6 +423,7 @@ CREATE TABLE sites (
   id INTEGER PRIMARY KEY, uid TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL, domain TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1
 ) STRICT;
+CREATE UNIQUE INDEX sites_domain ON sites (domain);   -- 0014, issue #3
 
 CREATE TABLE categories (
   id        INTEGER PRIMARY KEY,
@@ -461,6 +462,27 @@ pure functions:
   the root's path is `/` on every site. A document filed nowhere in particular
   is filed at `/`; a URI built from a site with no root would have no leading
   slash to start from.
+
+**A site's domain is mutable, and it is the only mutable name that is also a
+path.** `sites.domain` is the host every URL of that site is built on and the
+first path segment of the template tree, so changing it moves every address the
+site serves and every template lookup at once. Nothing else moves: categories
+and grants key on `site_id`, and no URI format carries the domain, so a rename
+is `UPDATE sites SET domain = ...` and no more — which is exactly why it needs
+`sites_domain UNIQUE` (0014) beside it, since a second site claiming the name
+would be a template lookup with two answers.
+
+It is mutable because it has to be. `cmsdb seed` writes a domain before anybody
+has said what the installation is called, and until issue #3 the alternatives
+were to name the production template directory after a development hostname or
+to rewrite the row by hand with `sqlite3`. `PATCH /api/v1/sites/{uid}` needs
+`create` over the *system* subject rather than `publish` over the site: a
+site-scoped grant says what its holder may do to that site's content, and where
+this site's templates are looked for is a decision about the shape of the
+installation. What the system cannot do is rename the directory to match —
+nothing here creates or moves a directory in the template tree (invariant 19) —
+so the event carries the old domain as well as the new one, and the two acts
+belong in one maintenance window.
 
 The subtree prefix test is `SUBSTR(path, 1, LENGTH(:prefix)) = :prefix` and not
 `LIKE :prefix || '%'`. A directory name may contain `%` or `_`, which `LIKE`
@@ -1197,8 +1219,8 @@ Templates are files on disk, in a tree that mirrors the tree it is searched by:
 
 ```
 <templates>/<site domain>/<category path>/<element type key>.gohtml
-<templates>/htmx-app.localhost/features/film/story.gohtml
-<templates>/htmx-app.localhost/story.gohtml
+<templates>/www.example.com/features/film/story.gohtml
+<templates>/www.example.com/story.gohtml
 ```
 
 `cmsd --templates DIR` names the root, `--preview DIR` names the scratch tree,
@@ -1958,7 +1980,7 @@ GET    /api/v1/invitations/{uid}                never the link
 POST   /api/v1/invitations/{uid}/revoke         {"reason":"..."} optional
 POST   /api/v1/invitations/redemption           unauthenticated; creates the account, issues no session
 
-GET    /api/v1/sites
+GET    /api/v1/sites                            PATCH /{uid} renames one (issue #3)
 GET    /api/v1/categories?site=N                 POST, and GET/PATCH/DELETE /{uid}
 GET    /api/v1/output-channels[?site=N]          POST, and GET/PATCH /{uid}
 GET    /api/v1/element-types                     POST, and GET/PATCH /{key}

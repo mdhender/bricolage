@@ -217,6 +217,70 @@ func (db *DB) ListSites(ctx context.Context) ([]domain.Site, error) {
 	return out, err
 }
 
+// SiteByUID reads one site by the uid the API speaks (invariant 10).
+//
+// SiteByID exists beside it because a document row carries an integer and an
+// absolute URL needs the domain; this one exists because a route names a site
+// and a route may not name a primary key.
+func (db *DB) SiteByUID(ctx context.Context, uid string) (domain.Site, error) {
+	var s domain.Site
+	err := db.Read(ctx, func(conn *sqlite.Conn) error {
+		return one(conn, fmt.Sprintf("site %q", uid),
+			`SELECT id, uid, name, domain, active FROM sites WHERE uid = :uid`,
+			func(stmt *sqlite.Stmt) { stmt.SetText(":uid", uid) },
+			func(stmt *sqlite.Stmt) error { s = scanSite(stmt); return nil })
+	})
+	return s, err
+}
+
+// UpdateSite changes a site's name and domain (issue #3).
+//
+// The domain is what a deployment gets wrong: "cmsdb seed" writes one, and
+// until this existed the only way to correct it was an UPDATE typed into
+// sqlite3 against the row that is the outermost scope dimension of every grant.
+//
+// A domain another site already holds is refused by SQLite on the unique index
+// migration 0014 adds, detected by result code and reported as
+// domain.ErrConflict (invariant 11). A read-then-write check here would be the
+// same answer with a race in it.
+//
+// The root category's name is not touched. It is a copy of the site's name made
+// when the site was created, and it has been a category with a life of its own
+// ever since -- an installation that renamed the root would find the rename
+// undone by this, which is the failure that comes of writing one value in two
+// places. Renaming it is "earl category move".
+func (db *DB) UpdateSite(ctx context.Context, s domain.Site, event domain.Event) (domain.Site, error) {
+	var out domain.Site
+	err := db.Tx(ctx, func(conn *sqlite.Conn) error {
+		err := run(conn, "updating site "+s.Domain, `
+			UPDATE sites SET name = :name, domain = :domain WHERE id = :id`,
+			func(stmt *sqlite.Stmt) {
+				stmt.SetText(":name", s.Name)
+				stmt.SetText(":domain", s.Domain)
+				stmt.SetInt64(":id", s.ID)
+			}, nil)
+		if err != nil {
+			return err
+		}
+		if conn.Changes() == 0 {
+			return notFound(fmt.Sprintf("site %d", s.ID))
+		}
+
+		if event.Type != "" {
+			event.SubjectKind = domain.SubjectSite
+			event.SubjectID = s.ID
+			if _, err := recordEvent(conn, event); err != nil {
+				return err
+			}
+		}
+		return one(conn, fmt.Sprintf("site %d", s.ID),
+			`SELECT id, uid, name, domain, active FROM sites WHERE id = :id`,
+			func(stmt *sqlite.Stmt) { stmt.SetInt64(":id", s.ID) },
+			func(stmt *sqlite.Stmt) error { out = scanSite(stmt); return nil })
+	})
+	return out, err
+}
+
 func scanSite(stmt *sqlite.Stmt) domain.Site {
 	return domain.Site{
 		ID:     stmt.GetInt64("id"),

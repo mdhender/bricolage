@@ -110,7 +110,7 @@ panic unless `CMS_ENV=production`, untagged binaries panic if it *is*.
 
 M0 through M13 are complete, and M14 (issue #6, invite-only registration) is in
 beside them. `cmsdb` can `init`, `migrate status`,
-`migrate up [--to N]`, `bootstrap admin`, `seed [--demo]`,
+`migrate up [--to N]`, `bootstrap admin`, `seed [--demo] [--site-domain HOST]`,
 `check [--db DIR --output DIR | --file FILE]`,
 `backup --db DIR --to FILE [--overwrite]`, and `vacuum`; `cmsd serve` requires `--db DIR`, opens
 `DIR/cms.db`, refuses to start on any of the four failures in `DESIGN.md`
@@ -125,7 +125,7 @@ as one `server.Backgrounds` and stopped by it. It takes the optional
 `--templates DIR`, `--preview DIR`, `--output DIR`, and
 `--related-failure fail|warn`.
 `earl` can `login` (with `--dev`), `whoami`, `logout`, `admin grant`,
-`admin assign`, `queue [SLUG]`, `job list|retry`, `site`,
+`admin assign`, `queue [SLUG]`, `job list|retry`, `site list|update`,
 `category list|create|show|move|delete`,
 `output-channel list|create|update`, `element-type list|create|update`, and
 `doc create|show|list|checkout|cancel|edit|checkin|revert|diff|events|transitions|do|assign|due|categories|uris|preview|publish [--dry-run]|resources|comment|comments|resolve|approve [--withdraw]|approvals`,
@@ -133,7 +133,7 @@ as one `server.Backgrounds` and stopped by it. It takes the optional
 `notification list [--unread]|read`, `invite create|list|show|revoke|redeem`,
 and `user list|show`.
 
-The schema is thirteen migrations — `0001_users.sql`, `0002_events.sql`,
+The schema is fourteen migrations — `0001_users.sql`, `0002_events.sql`,
 `0003_identity.sql` (`password_hash`, `roles`, `user_roles`, `sites`, `grants`,
 `sessions`), `0004_documents.sql` (`element_types`, `documents`,
 `document_versions` with the immutability trigger and the one-open-draft index,
@@ -156,7 +156,10 @@ effect and its `has_checked_in_version` guard), and `0011_collaboration.sql`
 thread listing seeks on), and `0012_alerts.sql` (`alert_rules`,
 `notifications`, and `alert_cursor`), and `0013_invitations.sql`
 (`invitations`, and the partial unique index that allows one pending
-invitation per address). `grants` now carries all nine of `DESIGN.md` §7's scope
+invitation per address), and `0014_site_domain.sql` (no tables: the unique
+index on `sites.domain`, which issue #3 needs because the column became
+editable — until then two sites sharing a domain was unreachable rather than
+refused). `grants` now carries all nine of `DESIGN.md` §7's scope
 dimensions; each arrived with the migration that created its target table,
 because SQLite cannot add a foreign key to a column that already exists.
 `internal/domain` and `internal/authz` have carried and resolved the whole scope
@@ -192,6 +195,22 @@ parent to hang off. `categories.path` is materialised, always `/`-terminated,
 and `UNIQUE (site_id, path)`; the subtree rewrite a move performs is one
 `UPDATE` whose prefix test is `SUBSTR` and not `LIKE`, because a directory name
 may contain `%` or `_`.
+
+A site's domain is mutable, and it is the only mutable name that is also a
+path. It is the host every URL of the site is built on and the first path
+segment of the template tree, so `PATCH /api/v1/sites/{uid}` (`earl site
+update`) moves every address and every template lookup at once — and needs
+`create` over the *system* subject, not `publish` over the site, because where
+this site's templates are looked for is a decision about the shape of the
+installation. `cmsdb seed --site-domain` writes it on the way up; the default,
+`assemblage.localhost`, is a placeholder for a developer's machine and
+deliberately no longer tracks `config.DefaultPublicOrigin` — the origin is where
+this CMS is reached and the domain is where its content is read, and on a real
+installation those are two hosts. Renaming the template directory to match is
+the operator's, because nothing here creates or moves one (invariant 19), so the
+`site.updated` event carries the old domain as well as the new one. `seed` does
+not create a second site: given a domain that differs from the one already
+there, it names `earl site update` and refuses (issue #3).
 
 Where a document is filed is a property of the document row, not of a version,
 so it is a subresource (`PUT /documents/{uid}/categories`) needing `Edit` and

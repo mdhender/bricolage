@@ -61,15 +61,41 @@ type elementTypeResponse struct {
 	Schema    string `json:"schema"`
 }
 
-// newSiteCmd lists the sites, which is how a person learns the id every other
-// command wants.
+// siteResponse is a site as the API speaks it.
+//
+// The id is an integer and the uid is the name every route takes, which is the
+// wart the API's own siteResponse describes: "site": 1 is what doc create has
+// taken since M3. Both are printed, because the listing is where a person
+// learns whichever one the command they are about to run wants.
+type siteResponse struct {
+	ID     int64  `json:"id"`
+	UID    string `json:"uid"`
+	Name   string `json:"name"`
+	Domain string `json:"domain"`
+	Active bool   `json:"active"`
+}
+
+// newSiteCmd is the parent of the site commands.
 func newSiteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "site",
+		Short: "List the sites and change what they are called",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
+	}
+	cmd.AddCommand(newSiteListCmd(), newSiteUpdateCmd())
+	return cmd
+}
+
+// newSiteListCmd lists the sites, which is how a person learns the id every
+// other command wants and the uid "site update" wants.
+func newSiteListCmd() *cobra.Command {
 	var (
 		server string
 		asJSON bool
 	)
 	cmd := &cobra.Command{
-		Use:   "site",
+		Use:   "list",
 		Short: "List the sites",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -78,13 +104,7 @@ func newSiteCmd() *cobra.Command {
 				return err
 			}
 			var out struct {
-				Sites []struct {
-					ID     int64  `json:"id"`
-					UID    string `json:"uid"`
-					Name   string `json:"name"`
-					Domain string `json:"domain"`
-					Active bool   `json:"active"`
-				} `json:"sites"`
+				Sites []siteResponse `json:"sites"`
 			}
 			if err := client.Get(cmd.Context(), "/api/v1/sites", &out); err != nil {
 				return err
@@ -94,15 +114,80 @@ func newSiteCmd() *cobra.Command {
 				return writeJSON(w, out)
 			}
 			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tDOMAIN\tNAME\tACTIVE")
+			fmt.Fprintln(tw, "ID\tUID\tDOMAIN\tNAME\tACTIVE")
 			for _, s := range out.Sites {
-				fmt.Fprintf(tw, "%d\t%s\t%s\t%t\n", s.ID, s.Domain, s.Name, s.Active)
+				fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%t\n", s.ID, s.UID, s.Domain, s.Name, s.Active)
 			}
 			return tw.Flush()
 		},
 	}
 	addServerFlag(cmd, &server)
 	addJSONFlag(cmd, &asJSON)
+	return cmd
+}
+
+// newSiteUpdateCmd renames a site (issue #3).
+//
+// The long help says what the command cannot do, because the half it cannot do
+// is the half that breaks a live system: the domain is the first path segment
+// of the template tree, and renaming the site does not rename the directory.
+func newSiteUpdateCmd() *cobra.Command {
+	var (
+		server     string
+		asJSON     bool
+		name       string
+		domainName string
+	)
+	cmd := &cobra.Command{
+		Use:   "update UID",
+		Short: "Change a site's domain or its display name",
+		Long: "Change a site's domain or its display name.\n\n" +
+			"The domain is the host every URL of this site is built on and the first\n" +
+			"path segment of the template tree:\n\n" +
+			"    <templates>/<site domain>/<category path>/<element type>.gohtml\n\n" +
+			"so changing it moves where every one of this site's templates is looked\n" +
+			"for. Rename that directory at the same time; nothing in this system\n" +
+			"creates or moves a directory in the template tree.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := docClient(cmd, server)
+			if err != nil {
+				return err
+			}
+			body := map[string]any{}
+			if cmd.Flags().Changed("domain") {
+				body["domain"] = domainName
+			}
+			if cmd.Flags().Changed("name") {
+				body["name"] = name
+			}
+			if len(body) == 0 {
+				return fmt.Errorf("nothing to change: give --domain, --name, or both")
+			}
+			var site siteResponse
+			if err := client.Do(cmd.Context(), http.MethodPatch,
+				"/api/v1/sites/"+url.PathEscape(args[0]), body, &site); err != nil {
+				return err
+			}
+			w := cmd.OutOrStdout()
+			if asJSON {
+				return writeJSON(w, site)
+			}
+			fmt.Fprintf(w, "updated: %s\n", site.Domain)
+			tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+			fmt.Fprintf(tw, "uid\t%s\n", site.UID)
+			fmt.Fprintf(tw, "id\t%d\n", site.ID)
+			fmt.Fprintf(tw, "domain\t%s\n", site.Domain)
+			fmt.Fprintf(tw, "name\t%s\n", site.Name)
+			fmt.Fprintf(tw, "active\t%t\n", site.Active)
+			fmt.Fprintf(tw, "templates\t%s/\n", site.Domain)
+			return tw.Flush()
+		},
+	}
+	addServerFlag(cmd, &server)
+	addJSONFlag(cmd, &asJSON)
+	cmd.Flags().StringVar(&domainName, "domain", "", "the host this site publishes on")
+	cmd.Flags().StringVar(&name, "name", "", "the site's display name")
 	return cmd
 }
 

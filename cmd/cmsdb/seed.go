@@ -28,12 +28,28 @@ const (
 	ViewerRoleSlug = "viewer"
 )
 
-// DefaultSiteDomain is the site seed creates, matching the development public
-// origin so that a freshly seeded database and a freshly started server agree
-// about what host they are.
+// DefaultSiteDomain is the site "cmsdb seed" creates when --site-domain does
+// not say otherwise.
+//
+// It is a .localhost name because the default has to be wrong somewhere and the
+// only place it is safe to be wrong is a developer's machine: a name that
+// resolves nowhere is obviously a placeholder, and a plausible one --
+// example.com, or the hostname of whatever box seed happened to run on -- is a
+// production system quietly publishing under somebody else's address.
+//
+// It deliberately does not track config.DefaultPublicOrigin any more, which it
+// did while nothing could change it. The two are different questions. The
+// public origin is where this CMS is reached -- cms.example.com, behind the
+// login -- and the site domain is where the content it publishes is read;
+// on a real installation those are two hosts, and a default that made them look
+// like one taught the wrong lesson on the way in.
+//
+// A deployment says which it wants: "cmsdb seed --site-domain www.example.com"
+// on the way up, "earl site update <uid> --domain www.example.com" afterwards
+// (issue #3).
 const (
 	DefaultSiteName   = "Default"
-	DefaultSiteDomain = "htmx-app.localhost"
+	DefaultSiteDomain = "assemblage.localhost"
 )
 
 // DefaultOutputChannelName is the output channel seed creates (DESIGN.md 5.3).
@@ -125,8 +141,9 @@ var seedRoles = []struct {
 // rather than twice.
 func newSeedCmd() *cobra.Command {
 	var (
-		dir  string
-		demo bool
+		dir        string
+		demo       bool
+		siteDomain string
 	)
 	cmd := &cobra.Command{
 		Use:   "seed",
@@ -136,13 +153,21 @@ func newSeedCmd() *cobra.Command {
 			ctx := cmd.Context()
 			out := cmd.OutOrStdout()
 
+			// Checked before the database is opened, so that a typo in the one
+			// value this command cannot take back is a refusal that has
+			// written nothing.
+			domainName, err := domain.NormalizeSiteDomain(siteDomain)
+			if err != nil {
+				return err
+			}
+
 			db, err := store.Open(ctx, dir, store.Options{})
 			if err != nil {
 				return err
 			}
 			defer db.Close()
 
-			if err := seed(ctx, db, out); err != nil {
+			if err := seed(ctx, db, out, domainName); err != nil {
 				return err
 			}
 			if demo {
@@ -154,11 +179,17 @@ func newSeedCmd() *cobra.Command {
 	addDBFlag(cmd, &dir)
 	cmd.Flags().BoolVar(&demo, "demo", false,
 		"also seed one sample document and one queued job; needs \"cmsdb bootstrap admin\" to have run")
+	cmd.Flags().StringVar(&siteDomain, "site-domain", DefaultSiteDomain,
+		"the host the seeded site publishes on, and the first path segment of its template tree")
 	return cmd
 }
 
 // seed does the work, so that a test can call it without a cobra command.
-func seed(ctx context.Context, db *store.DB, out io.Writer) error {
+//
+// siteDomain has already been through domain.NormalizeSiteDomain: this is main,
+// and what reaches the store is the folded value rather than what somebody
+// typed.
+func seed(ctx context.Context, db *store.DB, out io.Writer, siteDomain string) error {
 	// The clock is read here, in main, and handed down (invariant 3).
 	now := clock.Real{}.Now()
 
@@ -199,10 +230,21 @@ func seed(ctx context.Context, db *store.DB, out io.Writer) error {
 		fmt.Fprintf(out, "grant: %s may %s over %s\n", role.Slug, g.Privilege, g.Scope)
 	}
 
-	switch id, err := db.SiteByDomain(ctx, DefaultSiteDomain); {
-	case err == nil:
-		fmt.Fprintf(out, "site: %s (already present, id %d)\n", DefaultSiteDomain, id)
-	case errors.Is(err, domain.ErrNotFound):
+	// One site, and seeding is not how a second one is made.
+	//
+	// The check is "is there a site" and not "is there a site with this
+	// domain", which is the difference between re-running seed and creating a
+	// publication. Without it, "cmsdb seed --site-domain www.example.com"
+	// against an already-seeded database would quietly add a second site --
+	// leaving two root categories, two template trees, and an installation
+	// whose second site nobody meant to create. Renaming the one that is there
+	// is "earl site update" (issue #3).
+	existing, err := db.ListSites(ctx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case len(existing) == 0:
 		uid, err := ids.New(now)
 		if err != nil {
 			return err
@@ -210,17 +252,25 @@ func seed(ctx context.Context, db *store.DB, out io.Writer) error {
 		id, err := db.CreateSite(ctx, store.NewSite{
 			UID:    uid,
 			Name:   DefaultSiteName,
-			Domain: DefaultSiteDomain,
+			Domain: siteDomain,
 		})
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "site: %s (%s, id %d)\n", DefaultSiteDomain, DefaultSiteName, id)
+		fmt.Fprintf(out, "site: %s (%s, id %d)\n", siteDomain, DefaultSiteName, id)
+	case len(existing) == 1 && existing[0].Domain == siteDomain:
+		fmt.Fprintf(out, "site: %s (already present, id %d)\n", siteDomain, existing[0].ID)
+	case len(existing) == 1:
+		return fmt.Errorf(
+			"site: this database already has one, %s (uid %s), and seed does not create a second; "+
+				"rename it with \"earl site update %s --domain %s\": %w",
+			existing[0].Domain, existing[0].UID, existing[0].UID, siteDomain, domain.ErrConflict)
 	default:
-		return err
+		return fmt.Errorf("site: this database has %d of them, so there is no one site to seed: %w",
+			len(existing), domain.ErrConflict)
 	}
 
-	site, err := db.SiteByDomain(ctx, DefaultSiteDomain)
+	site, err := db.SiteByDomain(ctx, siteDomain)
 	if err != nil {
 		return err
 	}
@@ -236,7 +286,7 @@ func seed(ctx context.Context, db *store.DB, out io.Writer) error {
 		}
 		return err
 	}
-	fmt.Fprintf(out, "category: %s (%s, the root of %s)\n", root.Path, root.Name, DefaultSiteDomain)
+	fmt.Fprintf(out, "category: %s (%s, the root of %s)\n", root.Path, root.Name, siteDomain)
 
 	switch oc, err := db.OutputChannelByName(ctx, site, DefaultOutputChannelName); {
 	case err == nil:
@@ -351,10 +401,20 @@ func seedDemo(ctx context.Context, db *store.DB, out io.Writer) error {
 		}
 	}
 
-	site, err := db.SiteByDomain(ctx, DefaultSiteDomain)
+	// The site the sample document belongs to is whichever one seed made, not
+	// whichever one the default constant names: --site-domain means the two
+	// need not be the same, and --demo without --site-domain on a database
+	// seeded with one would otherwise fail looking like a missing site.
+	sites, err := db.ListSites(ctx)
 	if err != nil {
 		return err
 	}
+	if len(sites) != 1 {
+		return fmt.Errorf("--demo needs exactly one site to put the sample document on; this database has %d: %w",
+			len(sites), domain.ErrConflict)
+	}
+	site := sites[0].ID
+
 	et, err := db.ElementTypeByKeyName(ctx, DefaultElementTypeKey)
 	if err != nil {
 		return err

@@ -689,3 +689,123 @@ func TestCreateSiteCreatesItsRoot(t *testing.T) {
 		t.Errorf("the root is %+v, want site %d and no parent", root, id)
 	}
 }
+
+// TestSiteAdministration is issue #3: the site row is a development hostname
+// and something has to be able to change it.
+//
+// The privilege, the fold, the refusal of a name that could not be a host, and
+// the event that says what the domain used to be -- which is the only record
+// of it, because the row shows only what it says today.
+func TestSiteAdministration(t *testing.T) {
+	h := newCatHarness(t)
+
+	site, err := h.db.SiteByID(t.Context(), h.siteID)
+	if err != nil {
+		t.Fatalf("SiteByID: %v", err)
+	}
+
+	t.Run("the domain is folded and the event carries the old one", func(t *testing.T) {
+		updated, err := h.UpdateSite(t.Context(), h.owner, site.UID, SiteUpdate{
+			Domain: domain.Ref("  WWW.Example.COM  "),
+			Name:   domain.Ref("The Daily Paper"),
+		})
+		if err != nil {
+			t.Fatalf("UpdateSite: %v", err)
+		}
+		if updated.Domain != "www.example.com" {
+			t.Errorf("the domain is %q, want it trimmed and folded", updated.Domain)
+		}
+		if updated.Name != "The Daily Paper" {
+			t.Errorf("the name is %q", updated.Name)
+		}
+		if updated.UID != site.UID || updated.ID != site.ID {
+			t.Error("a rename minted a new site rather than renaming the one that was there")
+		}
+
+		got := h.eventsOfType(t, events.SiteUpdated)
+		if len(got) != 1 {
+			t.Fatalf("%d %s events, want 1", len(got), events.SiteUpdated)
+		}
+		if was, _ := got[0].Payload["was_domain"].(string); was != site.Domain {
+			t.Errorf("the event says the domain was %q, want %q; without it nothing records what every URL used to be",
+				was, site.Domain)
+		}
+	})
+
+	t.Run("the root category keeps its own name", func(t *testing.T) {
+		// It is a copy made when the site was created, and a category with a
+		// life of its own since. Writing it from here would undo a rename
+		// somebody made deliberately.
+		root, err := h.db.CategoryByPath(t.Context(), h.siteID, domain.RootPath)
+		if err != nil {
+			t.Fatalf("CategoryByPath: %v", err)
+		}
+		if root.Name != "Default" {
+			t.Errorf("the root category is now named %q; renaming the site renamed it too", root.Name)
+		}
+	})
+
+	t.Run("a name that could not be a host is refused", func(t *testing.T) {
+		for _, bad := range []string{"", "  ", "www example com", "../etc", "a/b", "www..example.com",
+			"-example.com", "example.com:", "example.com:0", "example.com:99999", "exámple.com"} {
+			if _, err := h.UpdateSite(t.Context(), h.owner, site.UID, SiteUpdate{
+				Domain: domain.Ref(bad),
+			}); !errors.Is(err, domain.ErrInvalid) {
+				t.Errorf("UpdateSite(%q) = %v, want invalid", bad, err)
+			}
+		}
+	})
+
+	t.Run("a port is allowed, because development serves on one", func(t *testing.T) {
+		updated, err := h.UpdateSite(t.Context(), h.owner, site.UID, SiteUpdate{
+			Domain: domain.Ref("assemblage.localhost:8443"),
+		})
+		if err != nil {
+			t.Fatalf("UpdateSite: %v", err)
+		}
+		if updated.Domain != "assemblage.localhost:8443" {
+			t.Errorf("the domain is %q", updated.Domain)
+		}
+	})
+
+	t.Run("a domain another site holds is a conflict", func(t *testing.T) {
+		if _, err := h.db.CreateSite(t.Context(), store.NewSite{
+			UID: ids.MustNew(start), Name: "Second", Domain: "second.example.com",
+		}); err != nil {
+			t.Fatalf("CreateSite: %v", err)
+		}
+		_, err := h.UpdateSite(t.Context(), h.owner, site.UID, SiteUpdate{
+			Domain: domain.Ref("second.example.com"),
+		})
+		if !errors.Is(err, domain.ErrConflict) {
+			t.Errorf("two sites on one domain = %v, want conflict; the template tree would have two answers", err)
+		}
+	})
+
+	t.Run("a site-scoped grant is not enough", func(t *testing.T) {
+		// Renaming a site moves the first path segment of the template tree,
+		// which is a decision about the shape of the installation rather than
+		// about this site's content.
+		scoped := h.userWithGrant(t, "site-publisher@example.com", "correct horse battery",
+			domain.Grant{Privilege: domain.Publish, Scope: domain.Scope{SiteID: domain.Ref(h.siteID)}})
+		if _, err := h.UpdateSite(t.Context(), scoped, site.UID, SiteUpdate{
+			Domain: domain.Ref("hijacked.example.com"),
+		}); !errors.Is(err, domain.ErrForbidden) {
+			t.Errorf("a site-scoped grant renamed the site = %v, want forbidden", err)
+		}
+	})
+
+	t.Run("an update that asks for nothing is refused", func(t *testing.T) {
+		if _, err := h.UpdateSite(t.Context(), h.owner, site.UID, SiteUpdate{}); !errors.Is(err, domain.ErrInvalid) {
+			t.Errorf("an empty update = %v, want invalid", err)
+		}
+	})
+
+	t.Run("a site that is not there is not found", func(t *testing.T) {
+		if _, err := h.UpdateSite(t.Context(), h.owner, "00000000000000000000000000", SiteUpdate{
+			Domain: domain.Ref("nowhere.example.com"),
+		}); !errors.Is(err, domain.ErrNotFound) {
+			t.Errorf("UpdateSite on a missing site = %v, want not found", err)
+		}
+	})
+}

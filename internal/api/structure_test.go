@@ -423,3 +423,72 @@ func TestSitesRoute(t *testing.T) {
 		t.Errorf("sites = %+v, want the one the harness created", out.Sites)
 	}
 }
+
+// TestSiteRoutes is issue #3 at the transport: the listing that was the whole
+// of the site API, and the PATCH beside it.
+func TestSiteRoutes(t *testing.T) {
+	h := newDocAPIHarness(t)
+	h.user(t, "admin@example.com", domain.Publish)
+	token := h.login(t, "admin@example.com")
+
+	rec := h.do(t, http.MethodGet, "/api/v1/sites", token, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /sites = %d %s", rec.Code, rec.Body.String())
+	}
+	var listed struct {
+		Sites []siteResponse `json:"sites"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Sites) != 1 {
+		t.Fatalf("%d sites, want 1", len(listed.Sites))
+	}
+	uid := listed.Sites[0].UID
+
+	t.Run("the route is named by the uid and not by the id", func(t *testing.T) {
+		// Invariant 10. The listing still carries an integer, which is the
+		// wart siteResponse describes; a route that took one would add to it.
+		rec := h.do(t, http.MethodPatch, "/api/v1/sites/1", token,
+			map[string]any{"domain": "www.example.com"})
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("PATCH /sites/1 = %d, want 404: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("a rename answers with the site", func(t *testing.T) {
+		rec := h.do(t, http.MethodPatch, "/api/v1/sites/"+uid, token,
+			map[string]any{"domain": "WWW.Example.com"})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PATCH /sites/%s = %d %s", uid, rec.Code, rec.Body.String())
+		}
+		var got siteResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Domain != "www.example.com" {
+			t.Errorf("the domain is %q, want it folded", got.Domain)
+		}
+		if got.Name != "Default" {
+			t.Errorf("a rename that mentioned only the domain changed the name to %q", got.Name)
+		}
+	})
+
+	t.Run("a domain that could not be a host is a 422", func(t *testing.T) {
+		rec := h.do(t, http.MethodPatch, "/api/v1/sites/"+uid, token,
+			map[string]any{"domain": "not a host"})
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("a bad domain = %d, want 422: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("without the privilege it is a 403", func(t *testing.T) {
+		h.user(t, "writer@example.com", domain.Edit)
+		writer := h.login(t, "writer@example.com")
+		rec := h.do(t, http.MethodPatch, "/api/v1/sites/"+uid, writer,
+			map[string]any{"domain": "hijacked.example.com"})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("PATCH without the privilege = %d, want 403: %s", rec.Code, rec.Body.String())
+		}
+	})
+}

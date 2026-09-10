@@ -144,7 +144,10 @@ visible in `ps` and land in shell history.
 three roots is ever created (invariant 19). The template tree is
 `<templates>/<site domain>/<category path>/<element type key>.gohtml`, so for
 the seeded site the fallback template is
-`templates/htmx-app.localhost/story.gohtml`. The output tree is where published
+`templates/assemblage.localhost/story.gohtml` — `assemblage.localhost` being
+what `cmsdb seed` writes unless `--site-domain` says otherwise. It is the site's
+domain and not the public origin: the two are the same length of string and
+different questions, and on a real installation they are different hosts. The output tree is where published
 files land, at the URI the output channel builds; the directories *inside* it
 are made by `internal/publish` and are the one exception invariant 19 carries.
 Full rules: `docs/DESIGN.md` §8.3 and §8.4.
