@@ -133,7 +133,7 @@ func TestEarlPreview(t *testing.T) {
 
 	t.Run("a story in /features/film/ finds the template in /features/", func(t *testing.T) {
 		got := previewJSON(t, story)
-		if got.Template != "htmx-app.localhost/features/story.gohtml" {
+		if got.Template != "assemblage.localhost/features/story.gohtml" {
 			t.Errorf("template = %q, want the one in /features/", got.Template)
 		}
 		if got.URI != "/features/film/2026/03/01/a-feature" {
@@ -145,8 +145,8 @@ func TestEarlPreview(t *testing.T) {
 		// Searched carries what the chosen template beat, deepest first: the
 		// one that is not there, then the one that is.
 		want := []string{
-			"htmx-app.localhost/features/film/story.gohtml",
-			"htmx-app.localhost/features/story.gohtml",
+			"assemblage.localhost/features/film/story.gohtml",
+			"assemblage.localhost/features/story.gohtml",
 		}
 		if len(got.Searched) != len(want) || got.Searched[0] != want[0] || got.Searched[1] != want[1] {
 			t.Errorf("searched = %v, want %v", got.Searched, want)
@@ -184,7 +184,7 @@ func TestEarlPreview(t *testing.T) {
 	t.Run("and refiling it falls back to the site root", func(t *testing.T) {
 		earl(t, "doc", "categories", story, "--set", "/")
 		got := previewJSON(t, story)
-		if got.Template != "htmx-app.localhost/story.gohtml" {
+		if got.Template != "assemblage.localhost/story.gohtml" {
 			t.Errorf("template = %q, want the site's root template", got.Template)
 		}
 		page := earl(t, "doc", "preview", story)
@@ -237,7 +237,7 @@ func TestEarlPreview(t *testing.T) {
 			t.Fatalf("earl doc preview --validate accepted a template that will not parse\n%s", stdout)
 		}
 		if !strings.Contains(stdout, "invalid") ||
-			!strings.Contains(stdout, "htmx-app.localhost/broken/story.gohtml") {
+			!strings.Contains(stdout, "assemblage.localhost/broken/story.gohtml") {
 			t.Errorf("the report does not name the broken template:\nstdout: %s\nstderr: %s", stdout, stderr)
 		}
 		if !strings.Contains(stdout, "parse") {
@@ -263,7 +263,7 @@ func TestEarlPreview(t *testing.T) {
 
 		before := previewFiles(t, scratch)
 		stderr := earlFails(t, "doc", "preview", uid)
-		if !strings.Contains(stderr, "htmx-app.localhost/explode/story.gohtml") {
+		if !strings.Contains(stderr, "assemblage.localhost/explode/story.gohtml") {
 			t.Errorf("the refusal does not name the template: %s", stderr)
 		}
 		if !strings.Contains(stderr, "line 3") {
@@ -283,8 +283,8 @@ func TestEarlPreview(t *testing.T) {
 		stderr := earlFails(t, "doc", "preview", uid)
 		for _, want := range []string{
 			"note",
-			"htmx-app.localhost/features/note.gohtml",
-			"htmx-app.localhost/note.gohtml",
+			"assemblage.localhost/features/note.gohtml",
+			"assemblage.localhost/note.gohtml",
 		} {
 			if !strings.Contains(stderr, want) {
 				t.Errorf("the refusal does not name %q: %s", want, stderr)

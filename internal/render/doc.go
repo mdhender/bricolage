@@ -13,8 +13,8 @@
 // tree it is searched by:
 //
 //	<root>/<site domain>/<category path>/<element type key>.gohtml
-//	<root>/htmx-app.localhost/features/film/story.gohtml
-//	<root>/htmx-app.localhost/story.gohtml
+//	<root>/assemblage.localhost/features/film/story.gohtml
+//	<root>/assemblage.localhost/story.gohtml
 //
 // The site directory is the one part DESIGN.md 8.4 does not spell out, and it
 // is there because category paths are unique per site and not across sites:

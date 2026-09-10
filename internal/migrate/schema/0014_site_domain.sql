@@ -1,0 +1,26 @@
+-- Copyright (c) 2026 Michael D Henderson.
+--
+-- 0014: a site's domain is the name of a thing, so no two sites may carry one
+-- (issue #3, DESIGN.md 5.3).
+--
+-- No table. What arrives with issue #3 is the ability to change
+-- sites.domain -- until now it was written once by "cmsdb seed" and by nothing
+-- else, so two sites sharing a domain was unreachable rather than refused.
+-- A column that can be edited needs the constraint the edit can violate.
+--
+-- The domain is not decoration. It is the first path segment of the template
+-- tree -- <templates>/<site domain>/<category path>/<element type>.gohtml --
+-- and the host half of every URL the site has ever published, so two sites
+-- claiming one is a template lookup with two answers and an address that
+-- resolves to whichever row was read first. store.SiteByDomain, which is what
+-- "cmsdb seed" asks before it creates anything, would fail with "more than one
+-- row": a duplicate would break seeding a database rather than the publish it
+-- came from.
+--
+-- Uniqueness rather than a check on the shape of the name. What a hostname may
+-- look like is a question for the code that accepts one from a person
+-- (domain.NormalizeSiteDomain), because the answer changes and a CHECK in a
+-- STRICT table does not; what belongs here is the part that is about the
+-- relationship between rows, which SQLite is the only thing that can enforce
+-- against a concurrent writer.
+CREATE UNIQUE INDEX sites_domain ON sites (domain);

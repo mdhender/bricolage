@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/mdhender/bricolage/internal/authz"
 	"github.com/mdhender/bricolage/internal/domain"
@@ -40,6 +41,21 @@ const (
 	// ElementTypeAdmin is what writing an element type needs, over the system
 	// subject.
 	ElementTypeAdmin = domain.Create
+
+	// SiteAdmin is what changing a site needs, over the system subject
+	// (issue #3).
+	//
+	// Over the system and not over the site, which is the one place this
+	// departs from ChannelAdmin beside it. A grant scoped to a site says what
+	// its holder may do to that site's content, and an output channel's URI
+	// format is exactly that: a decision about how this site's documents are
+	// addressed. A site's domain is not. It is the first path segment of the
+	// template tree, so changing it moves where every one of this site's
+	// templates is looked for -- a change to the shape of the installation,
+	// made by whoever lays that tree out, rather than to the site's content.
+	// It is also the privilege creating an additional site will need, and
+	// there is no site to scope that one to.
+	SiteAdmin = domain.Create
 )
 
 // systemSubject is the empty subject: only a grant that constrains nothing
@@ -396,6 +412,77 @@ func (s *Service) DocumentURIs(ctx context.Context, actor domain.Identity, uid s
 		out = append(out, row)
 	}
 	return view, out, nil
+}
+
+// SiteUpdate is a change to a site. Both fields are pointers because an
+// omitted field and an empty one are different requests.
+//
+// There is deliberately no Active. Nothing in this system reads sites.active
+// yet -- not the publisher, not the resolver, not a route -- so a verb that
+// wrote it would be one that appeared to switch a publication off and did not.
+// It arrives with the code that honours it.
+type SiteUpdate struct {
+	Name   *string
+	Domain *string
+}
+
+// IsEmpty reports whether the update asks for nothing.
+func (u SiteUpdate) IsEmpty() bool { return u.Name == nil && u.Domain == nil }
+
+// UpdateSite changes a site's name or its domain (issue #3).
+//
+// This is what a deployment needs and did not have. "cmsdb seed" writes a
+// domain, and a server brought up on a real host had no supported way to
+// correct it: the alternatives were to name the production template directory
+// after a development hostname or to UPDATE the row by hand, outside
+// internal/store, on the outermost scope dimension of every grant.
+//
+// The uid is fixed and so is the site's identity. What moves is the name it is
+// spelled by, which is a rename and not a new site: categories and grants key
+// on site_id, and no URI format carries the domain, so the schema is untouched
+// by it. What does move is every template lookup -- the tree hangs off
+// <templates>/<site domain>/ -- and every absolute URL the site's channels
+// build, which is why the event carries the old value as well as the new one.
+// A caller renaming a live site has a directory to rename at the same instant,
+// and nothing here can do that for it: the template tree is not this system's
+// to write (invariant 19).
+func (s *Service) UpdateSite(ctx context.Context, actor domain.Identity, uid string, u SiteUpdate) (domain.Site, error) {
+	if !authz.Allows(actor.Grants, systemSubject(), SiteAdmin) {
+		return domain.Site{}, fmt.Errorf(
+			"sites: %s over everything is required: %w", SiteAdmin, domain.ErrForbidden)
+	}
+	if u.IsEmpty() {
+		return domain.Site{}, fmt.Errorf("site: nothing to change: %w", domain.ErrInvalid)
+	}
+	site, err := s.db.SiteByUID(ctx, uid)
+	if err != nil {
+		return domain.Site{}, err
+	}
+	was := site
+
+	if u.Name != nil {
+		if err := domain.ValidateSiteName(*u.Name); err != nil {
+			return domain.Site{}, err
+		}
+		site.Name = strings.TrimSpace(*u.Name)
+	}
+	if u.Domain != nil {
+		normalized, err := domain.NormalizeSiteDomain(*u.Domain)
+		if err != nil {
+			return domain.Site{}, err
+		}
+		site.Domain = normalized
+	}
+
+	return s.db.UpdateSite(ctx, site, domain.Event{
+		Type:    events.SiteUpdated,
+		ActorID: actor.User.ID,
+		Payload: map[string]any{
+			"uid": site.UID, "name": site.Name, "domain": site.Domain,
+			"was_name": was.Name, "was_domain": was.Domain,
+		},
+		OccurredAt: s.Now(),
+	})
 }
 
 // ElementType reads one element type by key name.

@@ -531,3 +531,64 @@ func send(t *testing.T, req *http.Request) (string, int) {
 	}
 	return string(body), resp.StatusCode
 }
+
+// TestSeedSiteDomain is issue #3 from the other end: a server can be brought up
+// whose site domain matches the origin it actually serves, without hand-written
+// SQL.
+func TestSeedSiteDomain(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds three binaries")
+	}
+	bin := buildCommands(t, t.TempDir())
+
+	t.Run("the domain given is the domain written", func(t *testing.T) {
+		dir := initDB(t, bin["cmsdb"])
+		stdout, stderr, code := run(t, bin["cmsdb"], nil, "seed", "--db", dir,
+			"--site-domain", "WWW.Example.COM")
+		if code != 0 {
+			t.Fatalf("seed exited %d\nstderr: %s", code, stderr)
+		}
+		if !strings.Contains(stdout, "site: www.example.com") {
+			t.Errorf("seed printed %q, want the folded domain", stdout)
+		}
+		if strings.Contains(stdout, "assemblage.localhost") {
+			t.Errorf("seed wrote the default domain even though one was given: %q", stdout)
+		}
+	})
+
+	t.Run("a name that could not be a host is refused before anything is written", func(t *testing.T) {
+		dir := initDB(t, bin["cmsdb"])
+		_, stderr, code := run(t, bin["cmsdb"], nil, "seed", "--db", dir, "--site-domain", "not a host")
+		if code == 0 {
+			t.Fatal("seed accepted a domain that is not a host")
+		}
+		if !strings.Contains(stderr, "not a host") && !strings.Contains(stderr, "site domain") {
+			t.Errorf("the refusal says %q; it has to name the value", stderr)
+		}
+		// Nothing was written, so the next seed is a first seed.
+		stdout, stderr, code := run(t, bin["cmsdb"], nil, "seed", "--db", dir)
+		if code != 0 {
+			t.Fatalf("seed after a refused one exited %d\nstderr: %s", code, stderr)
+		}
+		if strings.Contains(stdout, "already present") {
+			t.Errorf("the refused seed left rows behind: %q", stdout)
+		}
+	})
+
+	t.Run("seeding again with another domain does not create a second site", func(t *testing.T) {
+		dir := initDB(t, bin["cmsdb"])
+		if _, stderr, code := run(t, bin["cmsdb"], nil, "seed", "--db", dir); code != 0 {
+			t.Fatalf("seed exited %d\nstderr: %s", code, stderr)
+		}
+		_, stderr, code := run(t, bin["cmsdb"], nil, "seed", "--db", dir, "--site-domain", "www.example.com")
+		if code == 0 {
+			t.Fatal("a second seed with another domain created a second site")
+		}
+		if !strings.Contains(stderr, "earl site update") {
+			t.Errorf("the refusal says %q; it has to name the command that does what was asked", stderr)
+		}
+		if _, stderr, code := run(t, bin["cmsdb"], nil, "check", "--db", dir); code != 0 {
+			t.Fatalf("cmsdb check after the refusal exited %d\nstderr: %s", code, stderr)
+		}
+	})
+}

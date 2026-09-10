@@ -266,6 +266,22 @@ const (
 	// refiling a story moves its address, and this is the line that says when.
 	DocumentFiled = "document.filed"
 
+	// SiteUpdated records a change to a site's name or its domain (issue #3).
+	//
+	// The domain is the reason this event exists. It is the first path segment
+	// of the template tree and the host half of every URL the site has ever
+	// published, so changing it moves every address the site serves and every
+	// template lookup at once -- which makes "why did every URL change" a
+	// question about this row, and without the event the answer would not be
+	// in the database at all.
+	//
+	// There is deliberately no "site.created". The one site a system starts
+	// with is written by "cmsdb seed", before there is an account to have
+	// written it -- the same reason the seeded grants carry a zero created_by
+	// -- and creating a second site is not yet something anything can do. The
+	// event arrives with the verb, not before it.
+	SiteUpdated = "site.updated"
+
 	// OutputChannelCreated and OutputChannelUpdated record a change to where
 	// content goes and what its address looks like. The payload carries the
 	// URI formats verbatim: a format edited last month is what last month's

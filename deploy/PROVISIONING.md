@@ -285,7 +285,7 @@ touches the schema:
 ```sh
 export CMS_ENV=production        # for this shell only, and only for these commands
 /opt/cms/bin/cmsdb init --db /opt/cms/var
-/opt/cms/bin/cmsdb seed --db /opt/cms/var
+/opt/cms/bin/cmsdb seed --db /opt/cms/var --site-domain www.example.com
 /opt/cms/bin/cmsdb bootstrap admin --db /opt/cms/var \
     --email you@example.com --name "Your Name"
 ```
@@ -314,13 +314,32 @@ roles, the site, the root category, an output channel, and the element types —
 not the workflow, which migration 0005 seeds, because `documents.workflow_id`
 is `NOT NULL` and no document row may exist before a workflow does.
 
-The site `seed` writes is `htmx-app.localhost`, which is the development public
-origin and wrong on any real server. That name is also the first path segment
-of the template tree — `<templates>/<site domain>/<category path>/<element
-type>.gohtml` — so until it can be changed, a deployment must either lay its
-templates out under a directory named `htmx-app.localhost/` or rewrite the row
-with hand-written SQL. Neither is good and both are temporary: see issue #3.
-Expect to settle it before anything renders or publishes.
+**`--site-domain` is the host your content is published on, not the host this
+CMS is reached at.** They are two different names on a real installation: the
+CMS answers at `cms.example.com`, behind the login, and the site it publishes is
+read at `www.example.com`. `server.public_origin` is the first; this is the
+second. Omitting the flag seeds `assemblage.localhost`, which is a placeholder
+for a developer's machine and wrong on any real server.
+
+Get it right here if you can, because the domain is also the first path segment
+of the template tree:
+
+```
+<templates>/<site domain>/<category path>/<element type>.gohtml
+```
+
+If it is already wrong, it is one command and one directory rename — no
+hand-written SQL, and nothing has to be re-seeded:
+
+```sh
+earl site list --server https://cms.example.com
+earl site update <uid> --server https://cms.example.com --domain www.example.com
+mv /opt/cms/templates/old.example.com /opt/cms/templates/www.example.com
+```
+
+Rename the directory in the same maintenance window as the row. Nothing in this
+system creates or moves a directory in the template tree (invariant 19), so
+between the two a render finds no template and answers 404.
 
 Do not leave `CMS_ENV` exported in a shell profile. The unit sets it, and that
 is the only place it should live.
